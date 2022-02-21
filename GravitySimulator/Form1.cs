@@ -31,8 +31,8 @@ namespace GravitySimulator
         int width = 0;
         int height = 0;
         float focus = 0.5f;
-        float initialVelocity = 0.05f; //0.5f;
-        int points = 50;
+        float initialVelocity = 0.10f; //0.5f;
+        int points = 100;
         float funLevel = 1; //1 is most accurate collisions, > 1 collisions take more effort
         float density = 203877746.0f; //23877746.0f;
         float maxRadius = 0.4f;
