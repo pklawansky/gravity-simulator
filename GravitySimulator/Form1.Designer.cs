@@ -35,6 +35,11 @@
             this.label3 = new System.Windows.Forms.Label();
             this.lblFocus = new System.Windows.Forms.Label();
             this.label4 = new System.Windows.Forms.Label();
+            this.label2 = new System.Windows.Forms.Label();
+            this.labelFPS = new System.Windows.Forms.Label();
+            this.labelFPSMax = new System.Windows.Forms.Label();
+            this.label6 = new System.Windows.Forms.Label();
+            this.textBox1 = new System.Windows.Forms.TextBox();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             this.SuspendLayout();
             // 
@@ -100,11 +105,60 @@
             this.label4.TabIndex = 5;
             this.label4.Text = "Focus";
             // 
+            // label2
+            // 
+            this.label2.AutoSize = true;
+            this.label2.Location = new System.Drawing.Point(619, 52);
+            this.label2.Name = "label2";
+            this.label2.Size = new System.Drawing.Size(27, 13);
+            this.label2.TabIndex = 7;
+            this.label2.Text = "FPS";
+            // 
+            // labelFPS
+            // 
+            this.labelFPS.AutoSize = true;
+            this.labelFPS.Location = new System.Drawing.Point(698, 52);
+            this.labelFPS.Name = "labelFPS";
+            this.labelFPS.Size = new System.Drawing.Size(13, 13);
+            this.labelFPS.TabIndex = 8;
+            this.labelFPS.Text = "0";
+            // 
+            // labelFPSMax
+            // 
+            this.labelFPSMax.AutoSize = true;
+            this.labelFPSMax.Location = new System.Drawing.Point(698, 65);
+            this.labelFPSMax.Name = "labelFPSMax";
+            this.labelFPSMax.Size = new System.Drawing.Size(13, 13);
+            this.labelFPSMax.TabIndex = 10;
+            this.labelFPSMax.Text = "0";
+            // 
+            // label6
+            // 
+            this.label6.AutoSize = true;
+            this.label6.Location = new System.Drawing.Point(619, 65);
+            this.label6.Name = "label6";
+            this.label6.Size = new System.Drawing.Size(50, 13);
+            this.label6.TabIndex = 9;
+            this.label6.Text = "FPS Max";
+            // 
+            // textBox1
+            // 
+            this.textBox1.Location = new System.Drawing.Point(622, 82);
+            this.textBox1.Multiline = true;
+            this.textBox1.Name = "textBox1";
+            this.textBox1.Size = new System.Drawing.Size(160, 198);
+            this.textBox1.TabIndex = 11;
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(794, 626);
+            this.Controls.Add(this.textBox1);
+            this.Controls.Add(this.labelFPSMax);
+            this.Controls.Add(this.label6);
+            this.Controls.Add(this.labelFPS);
+            this.Controls.Add(this.label2);
             this.Controls.Add(this.lblFocus);
             this.Controls.Add(this.label4);
             this.Controls.Add(this.lblGravity);
@@ -129,6 +183,11 @@
         private System.Windows.Forms.Label label3;
         private System.Windows.Forms.Label lblFocus;
         private System.Windows.Forms.Label label4;
+        private System.Windows.Forms.Label label2;
+        private System.Windows.Forms.Label labelFPS;
+        private System.Windows.Forms.Label labelFPSMax;
+        private System.Windows.Forms.Label label6;
+        private System.Windows.Forms.TextBox textBox1;
     }
 }
 

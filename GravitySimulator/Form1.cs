@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
@@ -19,29 +20,33 @@ namespace GravitySimulator
             InitializeComponent();
             Load += Form1_Load;
             KeyDown += Form1_KeyDown;
+            engine = new GravityEngine();
         }
 
         Timer t = null;
+
+        GravityEngine engine;
 
         Vector sceneBounds = null;
         int width = 0;
         int height = 0;
         float focus = 0.5f;
         float initialVelocity = 0.05f; //0.5f;
-        int points = 20;
+        int points = 50;
         float funLevel = 1; //1 is most accurate collisions, > 1 collisions take more effort
         float density = 203877746.0f; //23877746.0f;
-        float maxRadius = 0.3f;
+        float maxRadius = 0.4f;
         float globalGravity = 0f;
         float wallElasticity = 0.8f;
         float timeSkip = 0.4f; //in seconds
         int stepsPerFrame = 1;
-        int timerInterval = 17;
+        int timerInterval = 8;
         List<PointLight> pointLights = new List<PointLight>();
         float wallFacetSize = 0.1f;
-        double lightIntensity = 1;
+        double lightIntensity = 2;
         double ambience = 2;
-        float sceneScale = 100;
+        float sceneScale = 50;
+        bool wallCollisions = false;
 
         List<Plane> BoundaryPlanes = new List<Plane>();
 
@@ -112,16 +117,16 @@ namespace GravitySimulator
 
 
 
-        public int ActivePoints => GravityEngine.Instance.Points.Count(x => x.IsAlive);
+        public int ActivePoints => engine.Points.Count(x => x.IsAlive);
 
         private void SetupPoints()
         {
-            GravityEngine.Instance.SetupPoints(points, sceneBounds.x, sceneBounds.y, sceneBounds.z, maxRadius, density, initialVelocity);
+            engine.SetupPoints(points, sceneBounds.x, sceneBounds.y, sceneBounds.z, maxRadius, density, initialVelocity);
         }
 
         private void ProcessPositions()
         {
-            GravityEngine.Instance.ProcessPositions(stepsPerFrame, timeSkip, globalGravity, wallElasticity, funLevel, true);
+            engine.ProcessPositions(stepsPerFrame, timeSkip, globalGravity, wallElasticity, funLevel, wallCollisions);
         }
 
 
@@ -130,17 +135,28 @@ namespace GravitySimulator
         string mode = "perspective";// "perspective"; //orthographic
 
         //float focusInc = 0.01f;
+
+        long lastTick = DateTime.Now.Ticks;
+
         private void T_Tick(object sender, EventArgs e)
         {
+            var tick = DateTime.Now.Ticks;
+            var tickDiff = tick - lastTick;
+            lastTick = tick;
+            labelFPS.Text = (Convert.ToDouble(TimeSpan.TicksPerSecond) / Convert.ToDouble(tickDiff)).ToString("0.0");
 
+            StringBuilder sb = new StringBuilder();
+
+            var stopwatch = Stopwatch.StartNew();
             ProcessPositions();
+            sb.AppendLine($"ProcessPositions: {stopwatch.ElapsedMilliseconds}");
             var bmp = GraphicsEngine.GetBitmap(Brushes.Black, width, height);
-
+            sb.AppendLine($"GetBitmap: {stopwatch.ElapsedMilliseconds}");
             if (mode == "orthographic")
             {
                 DrawAxesOrthographic(bmp, false);
 
-                foreach (var point in GravityEngine.Instance.Points.Where(x => x.IsAlive).OrderByDescending(x => x.Position.y))
+                foreach (var point in engine.Points.Where(x => x.IsAlive).OrderByDescending(x => x.Position.y))
                 {
                     PlotPointOrthographic(bmp, point);
                 }
@@ -148,12 +164,15 @@ namespace GravitySimulator
             }
             else if (mode == "perspective")
             {
-                PlotBoundaryPlanes(bmp);
+                //PlotBoundaryPlanes(bmp);
+                sb.AppendLine($"PlotBoundaryPlanes: {stopwatch.ElapsedMilliseconds}");
                 DrawLightSource(bmp, pointLights, 5f / sceneScale);
-                foreach (var point in GravityEngine.Instance.Points.Where(x => x.IsAlive).OrderByDescending(x => x.Position.y))
+                sb.AppendLine($"DrawLightSource: {stopwatch.ElapsedMilliseconds}");
+                foreach (var point in engine.Points.Where(x => x.IsAlive).OrderByDescending(x => x.Position.y))
                 {
                     PlotSpherePespective(bmp, point);
                 }
+                sb.AppendLine($"PlotSpherePerspective: {stopwatch.ElapsedMilliseconds}");
             }
 
             PostProcessOutput(bmp);
@@ -163,10 +182,17 @@ namespace GravitySimulator
                 pictureBox1.Image = bmp;
             }));
 
+            sb.AppendLine($"DisplayImage: {stopwatch.ElapsedMilliseconds}");
+
             lblActivePoints.BeginInvoke((Action)(() =>
             {
                 lblActivePoints.Text = ActivePoints.ToString();
             }));
+
+            var finalTick = DateTime.Now.Ticks;
+
+            labelFPSMax.Text = (Convert.ToDouble(TimeSpan.TicksPerSecond) / Convert.ToDouble(finalTick - tick)).ToString("0.0");
+            textBox1.Text = sb.ToString();
         }
 
         private void PostProcessOutput(Bitmap bmp)
@@ -247,16 +273,17 @@ namespace GravitySimulator
 
         private void PlotSpherePespective(Bitmap bmp, PointInSpace point)
         {
-            var model = new SphereModel(point.Id, point.Position, point.Radius, sceneScale);
+            var model = point.Model;
+            //var model = new SphereModel(point.Id, point.Position, point.Radius, sceneScale);
 
-            var posY = point.Position.y;
-            var scale = Convert.ToInt32(Math.Round(255f * (1f - (posY / sceneBounds.y)), MidpointRounding.AwayFromZero));
-            if (scale < 0) scale = 0;
-            if (scale > 255) scale = 255;
+            //var posY = point.Position.y;
+            //var scale = Convert.ToInt32(Math.Round(255f * (1f - (posY / sceneBounds.y)), MidpointRounding.AwayFromZero));
+            //if (scale < 0) scale = 0;
+            //if (scale > 255) scale = 255;
 
-            var pen = new Pen(Color.FromArgb(scale, scale, scale), 1);
+            //var pen = new Pen(Color.FromArgb(scale, scale, scale), 1);
 
-            pen = new Pen(Color.Transparent, 0f);
+            var pen = new Pen(Color.Transparent, 0f);
 
             GraphicsEngine.DrawModelFacets3DFixedPerspective(bmp, model, pen, Color.LightGreen, width, height, sceneBounds, pointLights, focus);
 

@@ -8,6 +8,11 @@ namespace GravitySimulator.Models
 {
     public class PointInSpace
     {
+        public PointInSpace(IModel model)
+        {
+            Model = model;
+        }
+
         public int Id { get; set; }
         public bool IsAlive { get; set; }
 
@@ -27,6 +32,12 @@ namespace GravitySimulator.Models
         {
             return string.Format("Id = {0}, Mass = {1}, Force [{2}], Position [{3}], Velocity [{4}]",
                 this.Id, this.Mass, this.Force.ToString(), this.Position.ToString(), this.Velocity.ToString());
+        }
+
+        public void UpdatePosition(Vector newPosition)
+        {
+            Position = newPosition;
+            Model?.Move(newPosition);
         }
     }
 }

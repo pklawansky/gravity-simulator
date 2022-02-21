@@ -9,13 +9,13 @@ namespace GravitySimulator.Models
 {
     public class SphereModel : IModel
     {
-        public SphereModel(int id, Vector center, float radius, float sceneScale = 1f)
+        public SphereModel(int id, Vector center, float radius, float sceneScale = 50f)
         {
             Id = id;
             Center = center;
             Radius = radius;
             Points = new List<Vector>();
-            PointConnections = new List<Tuple<int, int>>();
+            //PointConnections = new List<Tuple<int, int>>();
             Facets = new List<Facet>();
             //GenerateSphereModel_Manual();
             //GenerateSphereModel_Algorithm();
@@ -33,7 +33,7 @@ namespace GravitySimulator.Models
 
         public int Id { get; set; }
         public List<Vector> Points { get; set; }
-        public List<Tuple<int, int>> PointConnections { get; set; }
+        //public List<Tuple<int, int>> PointConnections { get; set; }
         public Vector Center { get; set; }
         public List<Facet> Facets { get; set; }
 
@@ -89,6 +89,7 @@ namespace GravitySimulator.Models
 
 
         public float Radius { get; set; }
+        public Color Colour { get; set; }
 
 
         /*
@@ -212,9 +213,22 @@ namespace GravitySimulator.Models
         }
 
      
+        void Move(Vector newPosition)
+        {
+            var diff = newPosition - Center;
+            Center += diff;
+            Facets.ForEach(f =>
+            {
+                f.P1 += diff;
+                f.P2 += diff;
+                f.P3 += diff;
+            });
+        }
 
-
-
+        void IModel.Move(Vector newPosition)
+        {
+            Move(newPosition);
+        }
     }
 
 }

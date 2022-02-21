@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -47,6 +48,7 @@ namespace GravitySimulator.Models
         Vector Corner2 { get; set; }
 
         PlaneAxis Axis { get; set; }
+        public Color Colour { get; set; }
 
         private void GenerateFacets(bool invertNormal)
         {
@@ -142,6 +144,11 @@ namespace GravitySimulator.Models
                 startA += MaxFacetSize;
                 startA = startA > endA ? endA : startA;
             }
+        }
+
+        public void Move(Vector newPosition)
+        {
+            throw new NotImplementedException();
         }
     }
 }

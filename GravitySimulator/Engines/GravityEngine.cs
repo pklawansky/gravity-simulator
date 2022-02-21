@@ -9,13 +9,15 @@ namespace GravitySimulator.Engines
 {
     public class GravityEngine
     {
+        public GravityEngine()
+        {
+
+        }
+
+
         const float G = 0.00000000006673f;//6.0 * Math.Pow(10.0, -11);
 
-        private static GravityEngine engine = new GravityEngine();
-        public static GravityEngine Instance
-        {
-            get { return engine; }
-        }
+
 
         public Vector GetCenterOfMass()
         {
@@ -49,7 +51,6 @@ namespace GravitySimulator.Engines
         }
 
         public List<PointInSpace> Points = new List<PointInSpace>();
-        public Dictionary<int, List<PointInSpace>> PointLogs = new Dictionary<int, List<PointInSpace>>();
 
 
 
@@ -61,7 +62,6 @@ namespace GravitySimulator.Engines
             MaxZ = maxZ;
 
             Points = new List<PointInSpace>();
-            PointLogs = new Dictionary<int, List<PointInSpace>>();
             Random randm = new Random(DateTime.Now.Millisecond);
             for (int i = 0; i < count; i++)
             {
@@ -87,7 +87,14 @@ namespace GravitySimulator.Engines
                 float scalePosY = MaxY - (5.0f * maxRadius);
                 float scalePosZ = MaxZ - (5.0f * maxRadius);
 
-                PointInSpace p = new PointInSpace()
+                var pointPosition = new Vector
+                {
+                    x = Convert.ToSingle(randm.NextDouble()) * scalePosX + maxRadius,
+                    y = Convert.ToSingle(randm.NextDouble()) * scalePosY + maxRadius,
+                    z = Convert.ToSingle(randm.NextDouble()) * scalePosZ + maxRadius
+                };
+
+                PointInSpace p = new PointInSpace(new SphereModel(i + 1, pointPosition, radius))
                 {
                     Id = i + 1,
                     Mass = density * GetVolumeFromRadius(radius),
@@ -96,19 +103,13 @@ namespace GravitySimulator.Engines
                     Radius = radius,
                     Force = new Vector { x = 0, y = 0, z = 0 },
                     Velocity = Velocity,
-                    Position = new Vector
-                    {
-                        x = Convert.ToSingle(randm.NextDouble()) * scalePosX + maxRadius,
-                        y = Convert.ToSingle(randm.NextDouble()) * scalePosY + maxRadius,
-                        z = Convert.ToSingle(randm.NextDouble()) * scalePosZ + maxRadius
-                    }
+                    Position = pointPosition
                 };
 
                 if (positionOverride != null)
                     p.Position = positionOverride;
 
                 Points.Add(p);
-                PointLogs.Add(p.Id, new List<PointInSpace> { p });
             }
         }
 
@@ -129,7 +130,7 @@ namespace GravitySimulator.Engines
                 {
                     point.Force += new Vector { z = -globalGravity * point.Mass };
                 }
-                foreach (var otherpoint in Points.Where(x => x.Id != point.Id && x.IsAlive))
+                foreach (var otherpoint in totalPoints.Where(x => x.Id != point.Id))
                 {
                     Vector F = CalculateGravitationalForceBetweenTwoObjects(point, otherpoint);
                     point.Force += F;
@@ -197,15 +198,17 @@ namespace GravitySimulator.Engines
                     {
                         point.IsAlive = false;
                         otherpoint.IsAlive = false;
-                        var newpoint = new PointInSpace()
+                        var newPosition = GetCenterOfMass(new List<PointInSpace> { point, otherpoint });
+                        var newRadius = GetRadiusFromVolume(GetVolumeFromRadius(point.Radius) + GetVolumeFromRadius(otherpoint.Radius));
+                        var newpoint = new PointInSpace(new SphereModel(Points.Max(x => x.Id) + cnt, newPosition, newRadius))
                         {
                             Id = Points.Max(x => x.Id) + cnt,
                             IsAlive = true,
                             Mass = point.Mass + otherpoint.Mass,
-                            Radius = GetRadiusFromVolume(GetVolumeFromRadius(point.Radius) + GetVolumeFromRadius(otherpoint.Radius)),
+                            Radius = newRadius,
                             Force = point.Force + otherpoint.Force,
                             TimeStamp = point.TimeStamp,
-                            Position = GetCenterOfMass(new List<PointInSpace> { point, otherpoint }),
+                            Position = newPosition,
                             Velocity = (point.Velocity * point.Mass + otherpoint.Velocity * otherpoint.Mass) / (point.Mass + otherpoint.Mass),
                             PointCollision = true
                         };
@@ -216,10 +219,6 @@ namespace GravitySimulator.Engines
             }
 
             Points.AddRange(newpoints);
-            foreach (var newp in newpoints)
-            {
-                PointLogs.Add(newp.Id, new List<PointInSpace> { newp });
-            }
         }
 
         private float GetRadiusFromVolume(float volume)
@@ -242,15 +241,10 @@ namespace GravitySimulator.Engines
         {
             foreach (var point in Points.Where(x => x.IsAlive))
             {
-                var lastpoint = PointLogs[point.Id].LastOrDefault();
                 Vector newposition = CalculatePositionDueToVelocityOverTime(timeskip, point.Position, point.Velocity);
-                point.Position = newposition;
-
-
+                point.UpdatePosition(newposition);
 
                 point.TimeStamp += timeskip;
-                PointLogs[point.Id].Add(new PointInSpace { Id = point.Id, Force = point.Force, Mass = point.Mass, Position = point.Position, TimeStamp = point.TimeStamp, Velocity = point.Velocity });
-                PointLogs[point.Id].Remove(PointLogs[point.Id].FirstOrDefault());
             }
         }
 
@@ -309,17 +303,17 @@ namespace GravitySimulator.Engines
 
         public void ProcessPositions(int steps, float timeskip, float globalGravity, float wallElasticity, float funLevel, bool wallCollisions)
         {
-            if (!Instance.IsProcessing)
+            if (!IsProcessing)
             {
-                Instance.IsProcessing = true;
+                IsProcessing = true;
                 for (int i = 0; i < steps; i++)
                 {
-                    Instance.SenseCollisions(wallElasticity, funLevel, wallCollisions);
-                    Instance.CalculateForces(globalGravity);
-                    Instance.CalculateVelocities(timeskip);
-                    Instance.CalculateNewPositions(timeskip);
+                    SenseCollisions(wallElasticity, funLevel, wallCollisions);
+                    CalculateForces(globalGravity);
+                    CalculateVelocities(timeskip);
+                    CalculateNewPositions(timeskip);
                 }
-                Instance.IsProcessing = false;
+                IsProcessing = false;
             }
         }
     }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -31,5 +32,11 @@ namespace GravitySimulator.Models
 
         public double LightIntensity { get; set; }
         public double Ambience { get; set; }
+        public Color Colour { get; set; }
+
+        public void Move(Vector newPosition)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

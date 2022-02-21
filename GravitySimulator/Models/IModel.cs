@@ -13,5 +13,7 @@ namespace GravitySimulator.Models
         List<Vector> Points { get; set; }
         Vector Center { get; set; }
         List<Facet> Facets { get; set; }
+        Color Colour { get; set; }
+        void Move(Vector newPosition);
     }
 }
