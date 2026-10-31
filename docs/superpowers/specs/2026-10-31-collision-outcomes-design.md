@@ -164,3 +164,101 @@ never the limit (≥ 166 fps even at 400k), so the step rate decides.
 | fragments created | 1,747 | 8,988 |
 | peak live count | 50,000 | 50,000 (the load; never exceeded) |
 | folded at ceiling | n/a | 0 |
+
+## Amendment 2026-10-31: faster collision sweep, ceiling raised to 150,000
+
+Decision (human, verbatim): "Yes, speed it up"
+
+This amendment replaces the ceiling in the amendment above.
+
+### What changed
+
+The collision sweep used one uniform grid. Bodies larger than 4× the mean radius were checked against every body,
+but only the first 64 of them. Past 64 large clumps, the grid cell became twice the largest remaining radius, so
+cells were huge. At 110k live it made 16.6 million distance tests to find about 400 contacts, on one thread.
+
+It is now a hierarchical spatial hash. Bodies are binned by size into levels whose cell size doubles. The smallest
+cell is just over twice the smallest radius, and each body sits in the lowest level whose cell is at least its
+diameter. Each body checks its own level (its cell and the 13 forward neighbours), and the cells within reach in
+each coarser level. A level with 16 bodies or fewer is checked as a plain list. The work per body no longer depends
+on how large the largest bodies are, and the 64-body cliff is gone.
+
+Pairs are found in parallel at the start of the sweep. They are sorted by (lower index, higher index), duplicates
+are removed, and then they are resolved one at a time in that order. Each pair is re-tested against the current
+state first. Resolution stays sequential because it changes bodies and draws random numbers, so both collision
+models stay deterministic per seed.
+
+Other options considered:
+
+- **Sort-and-sweep:** rejected. In a thin disc, one axis's intervals overlap about as many bodies as the old grid's
+  cells did.
+- **Querying the Barnes-Hut octree:** rejected. It needs per-node radius bounds and pointer-chasing traversal, which
+  is slower than hashing.
+
+`CollisionBroadPhaseTests` checks the new broad phase against an O(n²) search. On random mixed-size states (more
+than 64 large bodies, a star-sized body, dead bodies) it finds exactly the same contact set.
+
+**Behaviour change.** The old sweep found and resolved pairs in one interleaved pass. So a contact created
+mid-sweep, such as a merged body grown into a neighbour, could be resolved in the same step. Now that contact waits
+one step. The merge and bounce rules are unchanged. The MergeOrBounce golden hashes were re-pinned in their own
+commit:
+
+- disc: 1,450 → 1,451 bodies left, 2,550 → 2,549 merges;
+- spinning cloud: 153 → 182 bodies left, 2,847 → 2,818 merges, 3,809 → 3,894 bounces.
+
+### Step split (debris cloud, Release, 32 cores)
+
+Gravity is the tree build plus forces. Collisions are one sweep on a copy of the timed state.
+
+| N | step before → after | gravity before → after | collisions before → after | snapshot |
+|---|---|---|---|---|
+| 100,000 | 220 → 132 ms | 92 → 116 ms | 127 → 19 ms | 0.3 ms |
+| 200,000 | 572 → 310 ms | 239 → 273 ms | 413 → 37 ms | 0.5–1 ms |
+
+Before, at 100k, the collision time broke down as 2 ms grid build, 75 ms scanning, 20 ms on the 64 oversize bodies,
+and run-to-run variance; compaction was under 0.1 ms. The old sweep tested and resolved in the same loop, so its
+broad and narrow phases cannot be separated.
+
+After, at 100k, the 19 ms is 18.4 ms finding pairs (1.2M tests, in parallel), 0.5 ms resolving and 0.1 ms
+compacting. At 200k it is 35.5 + 1.5 + 0.3 ms.
+
+Gravity varies about ±20% between runs. **Gravity is now the bottleneck**: 88% of the step at 100k and 200k.
+
+### Measured cost after
+
+Same method and states as the table above.
+
+| N (debris cloud) | live during timing | step | steps/s | render | fresh disc at N: live, steps/s |
+|---|---|---|---|---|---|
+| 50,000 | 53.6k → 61.6k | 53 ms | 18.9 | 0.8 ms | 41.7k, 29.9 |
+| 100,000 | 106k → 118k | 132 ms | 7.6 | 1.7 ms | 70.4k, 12.0 |
+| 150,000 | 156k → 169k | 227 ms | 4.4 | 2.2 ms | 89.8k, 10.5 |
+| 200,000 | 205k → 222k | 310 ms | 3.2 | 2.9 ms | 102k, 8.3 |
+| 300,000 | 299k → 316k | 496 ms | 2.0 | 4.1 ms | 113k, 7.6 |
+| 400,000 | 386k → 398k | 719 ms | 1.4 | 5.3 ms | 115k, 7.3 |
+
+### New ceiling
+
+`SimulationParameters.MaxLiveParticles` = **150,000**. The Particles box maximum now follows the constant.
+
+Held at that ceiling, the debris cloud ran at **4.9 steps/s**: 205 ms per step over 30 steps, 144k → 150k live,
+with gravity 147 ms and collisions 19 ms. That is the same "about 5 steps/s" bar that set 100,000 before, which ran
+at 4.7 steps/s. The table row for 150,000 shows 4.4 steps/s because there the cloud grew past the load to 169k with
+no ceiling.
+
+### Clumping check after (10% disc, 50k, 1,500 steps, Outcomes)
+
+The numbers do not match exactly, because the resolution order changed. Seed 1 now gives 121 clumps of 10+ grains
+(was 131), 1,788 bodies (was 2,076) and 9,484 fragments (was 8,988). Peak live stays at the 50,000 load, and none
+were folded.
+
+Across seeds 1–4, the differences are mostly within the seed-to-seed spread:
+
+| | old code | new code |
+|---|---|---|
+| clumps | 122–143 (mean 131) | 118–132 (mean 123) |
+| bodies | 1,960–2,373 | 1,788–3,170 |
+| fragments | 8,988–10,580 | 9,387–15,029 |
+
+Clump counts run about 6% lower, consistent with chained merges now taking an extra step each. The spec's bar of at
+least 50 clumps still holds.
