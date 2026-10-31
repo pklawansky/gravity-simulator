@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Opt-in: run only the perf benchmarks. -->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category=Perf</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

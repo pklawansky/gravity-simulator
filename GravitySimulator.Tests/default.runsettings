@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default for `dotnet test`: skip the long-running perf benchmarks. -->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category!=Perf</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>
