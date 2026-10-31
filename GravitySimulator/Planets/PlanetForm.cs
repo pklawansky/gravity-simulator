@@ -329,7 +329,7 @@ namespace GravitySimulator.Planets
             if (_sim.Parameters.CollisionModel == CollisionModel.Outcomes)
             {
                 sb.AppendLine($"Part. acc.{s.PartialAccretions,10:N0}");
-                sb.AppendLine($"Hit & run {s.HitAndRuns,10:N0}");
+                sb.AppendLine($"Hit && run {s.HitAndRuns,10:N0}"); // "&&": the label treats "&" as a mnemonic
                 sb.AppendLine($"Erosions  {s.Erosions,10:N0}");
                 sb.AppendLine($"Disrupted {s.Disruptions,10:N0}");
                 sb.AppendLine($"Fragments {s.FragmentsCreated,10:N0}");
