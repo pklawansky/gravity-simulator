@@ -21,7 +21,7 @@ namespace GravitySimulator.Sph
     {
         private readonly SphSimulation _sim = new SphSimulation();
         private readonly SphRenderer _renderer = new SphRenderer();
-        private readonly OrbitCamera _camera = new OrbitCamera();
+        private readonly OrbitCamera _camera = new OrbitCamera { DynamicClip = true };
         private readonly Timer _frameTimer = new Timer { Interval = 10 };
 
         private GLControl _gl;
@@ -202,6 +202,8 @@ namespace GravitySimulator.Sph
                 var scenario = SphPresets.Create(kind, (int)_count.Value, Environment.TickCount);
                 _sim.Load(scenario);
                 _renderer.Configure(scenario);
+                // Zoom in to 1% of the framing distance: in the TDE a black hole then fills the view.
+                _camera.MinDistance = 0.01f * scenario.CameraDistance;
                 _camera.Distance = scenario.CameraDistance;
                 if (scenario.CameraYaw is float yaw) _camera.Yaw = yaw;
                 if (scenario.CameraPitch is float pitch) _camera.Pitch = pitch;

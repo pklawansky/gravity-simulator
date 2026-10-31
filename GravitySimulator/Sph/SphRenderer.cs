@@ -17,6 +17,7 @@ namespace GravitySimulator.Sph
     public sealed class SphRenderer : IDisposable
     {
         private GlProgram _splat, _tonemap, _points;
+        private readonly CompactBodyRenderer _compact = new CompactBodyRenderer();
         private int _gasVao, _emptyVao, _pointVao, _vboPos, _vboRad, _vboMass, _vboClass;
         private int _fbo, _hdrTex, _fbWidth, _fbHeight;
         private float[] _pos = new float[64 * 3], _rad = new float[64], _mass = new float[64], _cls = new float[64];
@@ -56,6 +57,7 @@ void main() { fragColor = texture(uTex, vUv); }";
             _splat = GlProgram.Graphics("splat.vert", "splat.frag");
             _tonemap = GlProgram.Graphics("tonemap.vert", "tonemap.frag");
             _points = GlProgram.FromSource("planet points", PlanetRenderer.VertexSource, PlanetRenderer.FragmentSource);
+            _compact.Initialize();
             _gasVao = GL.GenVertexArray();
             _emptyVao = GL.GenVertexArray();
             _pointVao = GL.GenVertexArray();
@@ -165,7 +167,7 @@ void main() { fragColor = texture(uTex, vUv); }";
             GL.DrawArrays(PrimitiveType.Triangles, 0, 3);
 
             // 3. Sinks, stars, black holes and supernova flashes (Planet formation's shader and rules).
-            DrawSinks(sim, view, proj, pointScale);
+            DrawSinks(sim, view, proj, pointScale, height);
             DrawOverlay(width, height);
             GL.BindVertexArray(0);
         }
@@ -241,7 +243,7 @@ void main() { fragColor = texture(uTex, vUv); }";
             GL.VertexAttribPointer(location, 4, VertexAttribPointerType.Float, false, 16, 0);
         }
 
-        private void DrawSinks(SphSimulation sim, Matrix4x4 view, Matrix4x4 proj, float pointScale)
+        private void DrawSinks(SphSimulation sim, Matrix4x4 view, Matrix4x4 proj, float pointScale, int height)
         {
             var sinks = sim.SinkManager?.Sinks;
             var stellar = sim.Stellar;
@@ -282,6 +284,7 @@ void main() { fragColor = texture(uTex, vUv); }";
             p.Set("uStarMass", 0f);
             p.Set("uStellar", 1);
             p.Set("uPass", 0);
+            p.Set("uCompactSpheres", 1);
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
             GL.UseProgram(p.Handle);
@@ -292,6 +295,9 @@ void main() { fragColor = texture(uTex, vUv); }";
             p.Set("uPass", 1);
             GL.DrawArrays(PrimitiveType.Points, 0, n);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+            // Stars, remnants and black holes as world-sized spheres (markers when sub-pixel).
+            _compact.Upload(_pos, _rad, _mass, _cls, n);
+            _compact.Draw(view, proj, height);
         }
 
         private static void Stream(int vbo, float[] data, int floats)
@@ -348,6 +354,7 @@ void main() { fragColor = texture(uTex, vUv); }";
             _tonemap?.Dispose();
             _points?.Dispose();
             _text?.Dispose();
+            _compact.Dispose();
             if (_textTex != 0) GL.DeleteTexture(_textTex);
             foreach (int b in new[] { _vboPos, _vboRad, _vboMass, _vboClass }) if (b != 0) GL.DeleteBuffer(b);
             foreach (int v in new[] { _gasVao, _emptyVao, _pointVao }) if (v != 0) GL.DeleteVertexArray(v);

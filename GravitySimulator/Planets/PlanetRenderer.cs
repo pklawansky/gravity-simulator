@@ -13,7 +13,10 @@ namespace GravitySimulator.Planets
     /// star emissive). With the stellar model on, bodies are coloured by class instead: gas dim violet,
     /// stars by mass (red, yellow, blue-white), white dwarfs small white, neutron stars small cyan,
     /// black holes a black disc (the event horizon at a minimum on-screen size) with an orange ring,
-    /// and supernova flashes. All methods must be called with the GL context current (UI thread).
+    /// and supernova flashes. With the stellar model on, stars, remnants and black holes are drawn by
+    /// <see cref="CompactBodyRenderer"/> as world-sized spheres instead (the point sprites above stay
+    /// for the other classes and for non-stellar presets). All methods must be called with the GL
+    /// context current (UI thread).
     /// </summary>
     public sealed class PlanetRenderer : IDisposable
     {
@@ -28,6 +31,7 @@ uniform float uPointScale;   // viewport height * proj[1][1]
 uniform float uGrainMass;
 uniform float uStarMass;     // bodies at or above this mass are drawn as the star
 uniform int uStellar;        // 1 = colour by stellar class
+uniform int uCompactSpheres; // 1 = stars, remnants and black holes are drawn by CompactBodyRenderer
 out vec3 vColor;
 out float vStar;
 flat out int vKind;          // 0 normal, 1 star glow, 2 black hole, 3 flash, 4 gas
@@ -42,6 +46,7 @@ void main()
         int k = int(aClass + 0.5);
         vKind = 0;
         vStar = 0.0;
+        if (uCompactSpheres == 1 && k >= 2 && k <= 5) { vColor = vec3(0.0); gl_PointSize = 1.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
         if (k == 1) {            // gas
             vColor = vec3(0.32, 0.30, 0.62);
             gl_PointSize = clamp(px, 1.5, 48.0);
@@ -129,7 +134,8 @@ void main()
 }";
 
         private int _program, _vao, _vboPos, _vboRad, _vboMass, _vboClass;
-        private int _uView, _uProj, _uPointScale, _uGrainMass, _uStarMass, _uStellar, _uPass;
+        private int _uView, _uProj, _uPointScale, _uGrainMass, _uStarMass, _uStellar, _uPass, _uCompactSpheres;
+        private readonly CompactBodyRenderer _compact = new CompactBodyRenderer();
         private int _count, _drawCount;
         private bool _stellar;
         private long _uploadedVersion = -1;
@@ -149,6 +155,8 @@ void main()
             _uStarMass = GL.GetUniformLocation(_program, "uStarMass");
             _uStellar = GL.GetUniformLocation(_program, "uStellar");
             _uPass = GL.GetUniformLocation(_program, "uPass");
+            _uCompactSpheres = GL.GetUniformLocation(_program, "uCompactSpheres");
+            _compact.Initialize();
 
             _vao = GL.GenVertexArray();
             GL.BindVertexArray(_vao);
@@ -188,6 +196,7 @@ void main()
             Stream(_vboRad, snap.Radii, _drawCount);
             Stream(_vboMass, snap.Masses, _drawCount);
             Stream(_vboClass, snap.Classes, _drawCount);
+            if (_stellar) _compact.Upload(snap.Positions, snap.Radii, snap.Masses, snap.Classes, _count);
             _uploadedVersion = snap.Version;
         }
 
@@ -214,6 +223,7 @@ void main()
             GL.Uniform1(_uStarMass, _starMass);
             GL.Uniform1(_uStellar, _stellar ? 1 : 0);
             GL.Uniform1(_uPass, 0);
+            GL.Uniform1(_uCompactSpheres, _stellar ? 1 : 0);
             GL.BindVertexArray(_vao);
             GL.DrawArrays(PrimitiveType.Points, 0, _drawCount);
             if (_stellar)
@@ -223,6 +233,8 @@ void main()
                 GL.Uniform1(_uPass, 1);
                 GL.DrawArrays(PrimitiveType.Points, 0, _count);
                 GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+                // Stars, remnants and black holes as world-sized spheres (markers when sub-pixel).
+                _compact.Draw(camera.View, proj, Math.Max(1, height));
             }
             GL.BindVertexArray(0);
         }
@@ -292,6 +304,7 @@ void main()
         public void Dispose()
         {
             if (_program == 0) return;
+            _compact.Dispose();
             GL.DeleteBuffer(_vboPos);
             GL.DeleteBuffer(_vboRad);
             GL.DeleteBuffer(_vboMass);

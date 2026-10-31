@@ -16,6 +16,11 @@ namespace GravitySimulator.Planets
         public float FieldOfView { get; set; } = MathF.PI / 4f;
         public float MinDistance { get; set; } = 0.2f;
         public float MaxDistance { get; set; } = 200f;
+        /// <summary>
+        /// Near/far planes follow the distance (near = 10⁻³ d, far = 10³ d) instead of the fixed 0.01/1000,
+        /// so the camera can zoom in to objects far smaller than 0.01 world units.
+        /// </summary>
+        public bool DynamicClip { get; set; }
 
         public Vector3 Eye
         {
@@ -42,6 +47,7 @@ namespace GravitySimulator.Planets
         public Matrix4x4 View => Matrix4x4.CreateLookAt(Eye, Vector3.Zero, Vector3.UnitZ);
 
         public Matrix4x4 Projection(float aspect) =>
-            Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, MathF.Max(aspect, 1e-3f), 0.01f, 1000f);
+            Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, MathF.Max(aspect, 1e-3f),
+                DynamicClip ? MathF.Max(Distance * 1e-3f, 1e-12f) : 0.01f, DynamicClip ? MathF.Max(Distance * 1e3f, 1e-9f) : 1000f);
     }
 }
