@@ -27,10 +27,11 @@ namespace GravitySimulator.Planets
         private bool _glReady;
         private bool _screenshotRequested;
 
-        private ComboBox _preset;
+        private ComboBox _preset, _collisionModel;
         private NumericUpDown _count, _mergeK, _restitution;
         private TrackBar _timeSpeed, _discMass, _stellarAccel;
         private Label _timeSpeedLabel, _discMassLabel, _readout, _stellarAccelLabel, _discMassCaption, _stellarAccelCaption;
+        private Label _mergeKCaption, _restitutionCaption;
         private Button _start, _pause, _reset, _screenshot;
 
         private Point _lastMouse;
@@ -121,6 +122,11 @@ namespace GravitySimulator.Planets
             _restitution = new NumericUpDown { Minimum = 0m, Maximum = 1m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.5m, Width = 220 };
             _restitution.ValueChanged += (s, e) => ApplyParameters();
 
+            _collisionModel = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+            _collisionModel.Items.AddRange(new object[] { "Outcomes (Leinhardt & Stewart)", "Merge or bounce" });
+            _collisionModel.SelectedIndex = 0;
+            _collisionModel.SelectedIndexChanged += (s, e) => { ApplyParameters(); UpdateCollisionControls(); };
+
             _start = new Button { Text = "Start", Width = 105 };
             _pause = new Button { Text = "Pause", Width = 105 };
             _reset = new Button { Text = "Reset", Width = 105 };
@@ -153,8 +159,9 @@ namespace GravitySimulator.Planets
                 _discMassCaption, _discMass, _discMassLabel,
                 _stellarAccelCaption, _stellarAccel, _stellarAccelLabel,
                 Caption("Time speed"), _timeSpeed, _timeSpeedLabel,
-                Caption("Merge threshold k (x escape speed)"), _mergeK,
-                Caption("Restitution e (bounces)"), _restitution,
+                Caption("Collision model"), _collisionModel,
+                _mergeKCaption = Caption("Merge threshold k (x escape speed)"), _mergeK,
+                _restitutionCaption = Caption("Restitution e (bounces)"), _restitution,
                 buttons1, buttons2,
                 Caption("Drag to orbit, wheel to zoom"),
                 _readout,
@@ -218,6 +225,7 @@ namespace GravitySimulator.Planets
             p.TimeScale = speed;
             p.MergeThreshold = (float)_mergeK.Value;
             p.Restitution = (float)_restitution.Value;
+            p.CollisionModel = _collisionModel.SelectedIndex == 1 ? CollisionModel.MergeOrBounce : CollisionModel.Outcomes;
             float accel = StellarAccelSteps[_stellarAccel.Value];
             _stellarAccelLabel.Text = accel.ToString("0.##", CultureInfo.InvariantCulture) + "x";
             if (p.Stellar != null) p.Stellar.TimeAcceleration = accel;
@@ -241,6 +249,15 @@ namespace GravitySimulator.Planets
             bool disc = kind == PresetKind.DiscAroundStar;
             _discMassCaption.Visible = _discMass.Visible = _discMassLabel.Visible = disc;
             _stellarAccelCaption.Visible = _stellarAccel.Visible = _stellarAccelLabel.Visible = cosmic;
+            UpdateCollisionControls();
+        }
+
+        // Merge threshold k and restitution e only matter for merge-or-bounce. The cosmic presets keep
+        // them visible: their gas and stars always merge or bounce, whatever the rocky-body model.
+        private void UpdateCollisionControls()
+        {
+            bool show = _collisionModel.SelectedIndex == 1 || Presets.IsCosmic(SelectedPreset);
+            _mergeKCaption.Visible = _mergeK.Visible = _restitutionCaption.Visible = _restitution.Visible = show;
         }
 
         private void UpdateDiscMassLabel() =>
@@ -309,6 +326,14 @@ namespace GravitySimulator.Planets
             sb.AppendLine($"Merges    {s.Merges,10:N0}");
             sb.AppendLine($"Bounces   {s.Bounces,10:N0}");
             sb.AppendLine($"Escaped   {s.Escaped,10:N0}");
+            if (_sim.Parameters.CollisionModel == CollisionModel.Outcomes)
+            {
+                sb.AppendLine($"Part. acc.{s.PartialAccretions,10:N0}");
+                sb.AppendLine($"Hit & run {s.HitAndRuns,10:N0}");
+                sb.AppendLine($"Erosions  {s.Erosions,10:N0}");
+                sb.AppendLine($"Disrupted {s.Disruptions,10:N0}");
+                sb.AppendLine($"Fragments {s.FragmentsCreated,10:N0}");
+            }
             sb.AppendLine();
             if (s.StellarModel && s.ClassCounts.Length >= 6)
             {
