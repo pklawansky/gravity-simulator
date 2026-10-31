@@ -1,0 +1,22 @@
+// Supernova energy into nearby gas: u += du (1 - r/R) inside each blast radius R.
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer PosH { vec4 posH[]; };
+layout(std430, binding = 1) buffer Vel { vec4 vel[]; };
+layout(std430, binding = 2) readonly buffer MassId { vec4 massId[]; };
+uniform int uBlastCount;
+uniform vec4 uBlast[16];       // xyz centre, w radius
+uniform float uBlastDu[16];
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    if (massId[i].x <= 0.0) return;
+    vec3 x = posH[i].xyz;
+    float du = 0.0;
+    for (int k = 0; k < uBlastCount; k++)
+    {
+        float r = length(x - uBlast[k].xyz);
+        if (r < uBlast[k].w) du += uBlastDu[k] * (1.0 - r / uBlast[k].w);
+    }
+    if (du > 0.0) vel[i].w += du;
+}

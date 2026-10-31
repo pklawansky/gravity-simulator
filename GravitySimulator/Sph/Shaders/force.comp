@@ -1,0 +1,71 @@
+// Symmetric pressure force + Monaghan (1992) viscosity with the Balsara switch, du/dt and mu_max.
+// Pairs within 2 max(h_i, h_j): the 27 cells of size 2 h_max hold them all. Mirrors ComputeForces.
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer PosH { vec4 posH[]; };
+layout(std430, binding = 1) readonly buffer VPred { vec4 vpred[]; };
+layout(std430, binding = 2) readonly buffer MassId { vec4 massId[]; };
+layout(std430, binding = 3) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 4) readonly buffer RhoP { vec4 rhoP[]; };
+layout(std430, binding = 5) buffer Extra { vec4 extra[]; };
+layout(std430, binding = 6) writeonly buffer AccOut { vec4 accOut[]; };  // xyz a, w du/dt
+layout(std430, binding = 7) readonly buffer Ctrl { uint ctrl[]; };
+uniform int uIdeal;
+uniform float uAlpha, uBeta;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    float mi = massId[i].x;
+    if (mi <= 0.0) { accOut[i] = vec4(0.0); return; }
+    float cell = max(2.0 * uintBitsToFloat(ctrl[0]), 1e-30);
+    vec4 pI = posH[i];
+    vec3 xi = pI.xyz;
+    float hi = pI.w;
+    vec3 vi = vpred[i].xyz;
+    vec4 qi = rhoP[i];
+    float rhoi = qi.x, ci = qi.z, fi = qi.w;
+    float Ai = qi.y / (rhoi * rhoi);
+    vec3 a = vec3(0.0);
+    float dudt = 0.0, muMax = 0.0;
+    ivec3 cc = cellOf(xi, cell);
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = cc + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            if (j == i) continue;
+            vec4 pj = posH[j];
+            if (cellOf(pj.xyz, cell) != c) continue;
+            vec3 xij = xi - pj.xyz;
+            float r2 = dot(xij, xij);
+            float hj = pj.w;
+            float hmax = max(hi, hj);
+            if (r2 >= 4.0 * hmax * hmax) continue;
+            float r = sqrt(r2);
+            vec3 g = 0.5 * (gradW(xij, r, hi) + gradW(xij, r, hj));
+            vec3 vij = vi - vpred[j].xyz;
+            vec4 qj = rhoP[j];
+            float Aj = qj.y / (qj.x * qj.x);
+            float visc = 0.0;
+            float vr = dot(vij, xij);
+            if (vr < 0.0)
+            {
+                float hb = 0.5 * (hi + hj);
+                float mu = hb * vr / (r2 + 0.01 * hb * hb);
+                float cb = 0.5 * (ci + qj.z);
+                float fb = 0.5 * (fi + qj.w);
+                visc = fb * (-uAlpha * cb * mu + uBeta * mu * mu) / (0.5 * (rhoi + qj.x));
+                muMax = max(muMax, -mu);
+            }
+            float mj = massId[j].x;
+            a -= mj * (Ai + Aj + visc) * g;
+            dudt += mj * (Ai + 0.5 * visc) * dot(vij, g);
+        }
+    }
+    accOut[i] = vec4(a, uIdeal == 1 ? dudt : 0.0);
+    extra[i].z = muMax;
+}

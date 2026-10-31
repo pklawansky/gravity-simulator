@@ -1,0 +1,37 @@
+// Test hook: per particle, the count, id sum and id^2 sum of grid neighbours within 2 h_i (incl. itself).
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer PosH { vec4 posH[]; };
+layout(std430, binding = 1) readonly buffer MassId { vec4 massId[]; };
+layout(std430, binding = 2) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 3) readonly buffer Ctrl { uint ctrl[]; };
+layout(std430, binding = 4) writeonly buffer Sig { uvec4 sig[]; };
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    float cell = max(2.0 * uintBitsToFloat(ctrl[0]), 1e-30);
+    vec4 pI = posH[i];
+    float support2 = 4.0 * pI.w * pI.w;
+    uint count = 0u, idSum = 0u, idSq = 0u;
+    ivec3 cc = cellOf(pI.xyz, cell);
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = cc + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            vec3 xj = posH[j].xyz;
+            if (cellOf(xj, cell) != c) continue;
+            vec3 d = pI.xyz - xj;
+            if (dot(d, d) >= support2) continue;
+            uint id = floatBitsToUint(massId[j].y);
+            count++;
+            idSum += id;
+            idSq += id * id;
+        }
+    }
+    sig[i] = uvec4(count, idSum, idSq, 0u);
+}

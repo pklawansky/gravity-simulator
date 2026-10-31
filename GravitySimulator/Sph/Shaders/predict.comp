@@ -1,0 +1,16 @@
+// Velocity and internal energy predicted to the end of the step (used by density and forces).
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer Vel { vec4 vel[]; };
+layout(std430, binding = 1) readonly buffer Acc { vec4 acc[]; };
+layout(std430, binding = 2) writeonly buffer VPred { vec4 vpred[]; };
+uniform float uDtPredict;
+uniform int uIdeal;
+uniform float uUMin;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    vec4 v = vel[i], a = acc[i];
+    float u = uIdeal == 1 ? max(v.w + a.w * uDtPredict, uUMin) : v.w;
+    vpred[i] = vec4(v.xyz + a.xyz * uDtPredict, u);
+}

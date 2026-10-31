@@ -1,0 +1,32 @@
+// Per-work-group sums of kinetic, thermal and potential energy and of mass (summed on the CPU).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Vel { vec4 vel[]; };
+layout(std430, binding = 1) readonly buffer MassId { vec4 massId[]; };
+layout(std430, binding = 2) readonly buffer Extra { vec4 extra[]; };
+layout(std430, binding = 3) readonly buffer RhoP { vec4 rhoP[]; };
+layout(std430, binding = 4) writeonly buffer Partials { vec4 partials[]; };
+uniform int uIdeal;
+shared vec4 tmp[256];
+void main()
+{
+    uint i = gl_GlobalInvocationID.x, t = gl_LocalInvocationID.x;
+    vec4 e = vec4(0.0);
+    if (i < uCount)
+    {
+        float m = massId[i].x;
+        if (m > 0.0)
+        {
+            vec4 v = vel[i];
+            float u = uIdeal == 1 ? v.w : 1.5 * rhoP[i].y / rhoP[i].x;
+            e = vec4(0.5 * m * dot(v.xyz, v.xyz), m * u, 0.5 * m * extra[i].w, m);
+        }
+    }
+    tmp[t] = e;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u)
+    {
+        if (t < s) tmp[t] += tmp[t + s];
+        barrier();
+    }
+    if (t == 0u) partials[gl_WorkGroupID.x] = tmp[0];
+}

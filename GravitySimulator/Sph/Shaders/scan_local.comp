@@ -1,0 +1,28 @@
+// Exclusive prefix sum, 2048 elements per work group; block totals to blockSums.
+layout(local_size_x = 1024) in;
+layout(std430, binding = 0) readonly buffer In { uint inData[]; };
+layout(std430, binding = 1) writeonly buffer Out { uint outData[]; };
+layout(std430, binding = 2) writeonly buffer Sums { uint blockSums[]; };
+uniform uint uN;
+shared uint tmp[1024];
+void main()
+{
+    uint g = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    uint base = g * 2048u + 2u * t;
+    uint a = base < uN ? inData[base] : 0u;
+    uint b = base + 1u < uN ? inData[base + 1u] : 0u;
+    uint s = a + b;
+    tmp[t] = s;
+    barrier();
+    for (uint off = 1u; off < 1024u; off <<= 1u)
+    {
+        uint v = t >= off ? tmp[t - off] : 0u;
+        barrier();
+        tmp[t] += v;
+        barrier();
+    }
+    uint excl = tmp[t] - s;
+    if (base < uN) outData[base] = excl;
+    if (base + 1u < uN) outData[base + 1u] = excl + a;
+    if (t == 1023u) blockSums[g] = tmp[1023];
+}

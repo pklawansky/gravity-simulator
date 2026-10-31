@@ -1,0 +1,9 @@
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) writeonly buffer Data { uint data[]; };
+uniform uint uN;
+uniform uint uValue;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i < uN) data[i] = uValue;
+}

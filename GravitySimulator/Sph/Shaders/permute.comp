@@ -1,0 +1,17 @@
+// Counting sort, step 3: scatter two vec4 arrays into cell order (dead particles land last).
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer Key { uint key[]; };
+layout(std430, binding = 1) readonly buffer Rank { uint rank[]; };
+layout(std430, binding = 2) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 3) readonly buffer Src0 { vec4 src0[]; };
+layout(std430, binding = 4) writeonly buffer Dst0 { vec4 dst0[]; };
+layout(std430, binding = 5) readonly buffer Src1 { vec4 src1[]; };
+layout(std430, binding = 6) writeonly buffer Dst1 { vec4 dst1[]; };
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    uint d = cellStart[key[i]] + rank[i];
+    dst0[d] = src0[i];
+    dst1[d] = src1[i];
+}
