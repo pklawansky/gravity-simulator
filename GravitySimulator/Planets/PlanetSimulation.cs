@@ -1,0 +1,337 @@
+using System;
+using System.Diagnostics;
+using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace GravitySimulator.Planets
+{
+    /// <summary>Tunables for <see cref="PlanetSimulation"/>. Normalised units (G = 1).</summary>
+    public sealed class SimulationParameters
+    {
+        public float TimeStep { get; set; } = 0.004f;
+        public float TimeScale { get; set; } = 1f;
+        public float Theta { get; set; } = 0.6f;
+        public float Softening { get; set; } = 0.005f;
+        public float EscapeRadius { get; set; } = 20f;
+        public float MergeThreshold { get; set; } = 1f;
+        public float Restitution { get; set; } = 0.5f;
+    }
+
+    /// <summary>Immutable per-step statistics.</summary>
+    public sealed class SimulationStats
+    {
+        public long StepCount { get; init; }
+        public double SimTime { get; init; }
+        public int Count { get; init; }
+        public long Merges { get; init; }
+        public long Bounces { get; init; }
+        public long Escaped { get; init; }
+        public double StepsPerSecond { get; init; }
+        /// <summary>Mass of the heaviest body if it holds over half the total (the star); otherwise 0.</summary>
+        public float StarMass { get; init; }
+        /// <summary>Largest non-star masses, descending.</summary>
+        public float[] LargestMasses { get; init; } = Array.Empty<float>();
+        /// <summary>Smallest particle mass at load time (one dust grain).</summary>
+        public float GrainMass { get; init; }
+
+        public static readonly SimulationStats Empty = new SimulationStats();
+    }
+
+    /// <summary>
+    /// A published copy of the particle state for the renderer. Buffers are recycled
+    /// (triple buffering), but a snapshot is never written while the reader holds it.
+    /// </summary>
+    public sealed class SimulationSnapshot
+    {
+        public float[] Positions = Array.Empty<float>(); // xyz interleaved
+        public float[] Radii = Array.Empty<float>();
+        public float[] Masses = Array.Empty<float>();
+        public int Count;
+        public SimulationStats Stats = SimulationStats.Empty;
+        /// <summary>Increments with every publish; lets the reader skip re-uploading the same data.</summary>
+        public long Version;
+    }
+
+    /// <summary>
+    /// Owns the particle state and steps it with leapfrog kick-drift-kick, Barnes-Hut gravity
+    /// (forces in parallel), collisions, and escape removal. Can run on its own background thread;
+    /// after each step a snapshot is published for a single reader (the renderer).
+    /// </summary>
+    public sealed class PlanetSimulation : IDisposable
+    {
+        private const int TopN = 5;
+        private const int Fresh = 4;
+
+        private readonly object _gate = new object();
+        private readonly SimulationParameters _p;
+        private readonly CollisionResolver _collisions = new CollisionResolver();
+        private BarnesHutTree _tree = new BarnesHutTree(1024);
+        private ParticleSystem _ps = new ParticleSystem(1);
+
+        private long _steps, _merges, _bounces, _escaped, _version;
+        private double _simTime, _stepSecondsEma;
+        private float _grainMass;
+        private volatile SimulationStats _stats = SimulationStats.Empty;
+
+        // Triple buffer: writer owns _writeIdx, reader owns _readIdx, _shared is the hand-off slot.
+        private readonly SimulationSnapshot[] _snap = { new SimulationSnapshot(), new SimulationSnapshot(), new SimulationSnapshot() };
+        private int _writeIdx = 0, _shared = 1, _readIdx = 2;
+        private volatile bool _published;
+
+        // Background thread.
+        private Thread _thread;
+        private readonly ManualResetEventSlim _running = new ManualResetEventSlim(false);
+        private volatile bool _stop;
+
+        // Cached delegates so the parallel loops do not allocate closures each step.
+        private readonly Action<int> _kickDriftChunk;
+        private readonly Action<int> _forceKickChunk;
+        private int _chunkSize, _n;
+        private float _halfDt, _dt;
+
+        public PlanetSimulation(SimulationParameters parameters)
+        {
+            _p = parameters ?? new SimulationParameters();
+            _kickDriftChunk = KickDriftChunk;
+            _forceKickChunk = ForceKickChunk;
+        }
+
+        public SimulationParameters Parameters => _p;
+
+        /// <summary>The live state. Only touch it from the simulation thread (or when not running).</summary>
+        public ParticleSystem Particles => _ps;
+
+        public SimulationStats Stats => _stats;
+        public bool IsRunning => _running.IsSet && IsThreadAlive;
+        public bool IsThreadAlive => _thread != null && _thread.IsAlive;
+
+        /// <summary>Replaces the state (reset) and publishes it immediately.</summary>
+        public void Load(ParticleSystem initial)
+        {
+            lock (_gate)
+            {
+                _ps = initial;
+                _steps = _merges = _bounces = _escaped = 0;
+                _simTime = 0;
+                _grainMass = float.MaxValue;
+                for (int i = 0; i < _ps.Count; i++) if (_ps.Mass[i] > 0f && _ps.Mass[i] < _grainMass) _grainMass = _ps.Mass[i];
+                if (_grainMass == float.MaxValue) _grainMass = 0f;
+                _tree = new BarnesHutTree(_ps.Capacity);
+                ComputeAccelerations();
+                Publish();
+            }
+        }
+
+        /// <summary>Advances one step synchronously.</summary>
+        public void Step()
+        {
+            lock (_gate) StepCore();
+        }
+
+        private void StepCore()
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            _dt = _p.TimeStep * _p.TimeScale;
+            _halfDt = _dt * 0.5f;
+
+            RunChunks(_kickDriftChunk);       // v += a dt/2 ; x += v dt
+            BuildTree();
+            RunChunks(_forceKickChunk);       // a = F(x) ; v += a dt/2
+
+            _collisions.MergeThreshold = _p.MergeThreshold;
+            _collisions.Restitution = _p.Restitution;
+            _collisions.Resolve(_ps);
+            _merges += _collisions.LastMerges;
+            _bounces += _collisions.LastBounces;
+
+            float esc2 = _p.EscapeRadius * _p.EscapeRadius;
+            int escaped = 0;
+            for (int i = 0; i < _ps.Count; i++)
+            {
+                if (_ps.Position[i].LengthSquared() > esc2) { _ps.Mass[i] = 0f; escaped++; }
+            }
+            if (escaped > 0) { _ps.Compact(); _escaped += escaped; }
+
+            _steps++;
+            _simTime += _dt;
+            double secs = (Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency;
+            _stepSecondsEma = _stepSecondsEma == 0 ? secs : _stepSecondsEma * 0.9 + secs * 0.1;
+            Publish();
+        }
+
+        private void BuildTree()
+        {
+            _tree.Theta = _p.Theta;
+            _tree.Softening = _p.Softening;
+            _tree.Build(_ps);
+        }
+
+        private void ComputeAccelerations()
+        {
+            BuildTree();
+            _halfDt = 0f;
+            RunChunks(_forceKickChunk);
+        }
+
+        private void RunChunks(Action<int> body)
+        {
+            _n = _ps.Count;
+            if (_n == 0) return;
+            int chunks = Math.Min(_n, Environment.ProcessorCount * 4);
+            _chunkSize = (_n + chunks - 1) / chunks;
+            if (_n < 256) { for (int c = 0; c < chunks; c++) body(c); return; }
+            Parallel.For(0, chunks, body);
+        }
+
+        private void KickDriftChunk(int c)
+        {
+            int start = c * _chunkSize, end = Math.Min(_n, start + _chunkSize);
+            Vector3[] x = _ps.Position, v = _ps.Velocity, a = _ps.Acceleration;
+            float h = _halfDt, dt = _dt;
+            for (int i = start; i < end; i++)
+            {
+                v[i] += a[i] * h;
+                x[i] += v[i] * dt;
+            }
+        }
+
+        private void ForceKickChunk(int c)
+        {
+            int start = c * _chunkSize, end = Math.Min(_n, start + _chunkSize);
+            Vector3[] x = _ps.Position, v = _ps.Velocity, a = _ps.Acceleration;
+            float h = _halfDt;
+            for (int i = start; i < end; i++)
+            {
+                Vector3 acc = _tree.AccelerationAt(x[i], i);
+                a[i] = acc;
+                v[i] += acc * h;
+            }
+        }
+
+        // ---- snapshots -------------------------------------------------------------------------
+
+        private void Publish()
+        {
+            int n = _ps.Count;
+            var s = _snap[_writeIdx];
+            if (s.Radii.Length < n)
+            {
+                int cap = Math.Max(n, _ps.Capacity);
+                s.Positions = new float[cap * 3];
+                s.Radii = new float[cap];
+                s.Masses = new float[cap];
+            }
+            Vector3[] x = _ps.Position;
+            float[] pos = s.Positions;
+            for (int i = 0, k = 0; i < n; i++, k += 3)
+            {
+                pos[k] = x[i].X; pos[k + 1] = x[i].Y; pos[k + 2] = x[i].Z;
+            }
+            Array.Copy(_ps.Radius, s.Radii, n);
+            Array.Copy(_ps.Mass, s.Masses, n);
+            s.Count = n;
+            s.Version = ++_version;
+            s.Stats = _stats = BuildStats();
+
+            _writeIdx = Interlocked.Exchange(ref _shared, _writeIdx | Fresh) & 3;
+            _published = true;
+        }
+
+        /// <summary>
+        /// Returns the newest published snapshot (or the one already held if nothing newer), or null
+        /// before the first publish. Single reader only; the returned object stays valid and unchanged
+        /// until the next call.
+        /// </summary>
+        public SimulationSnapshot AcquireLatest()
+        {
+            if (!_published) return null;
+            if ((Volatile.Read(ref _shared) & Fresh) != 0)
+                _readIdx = Interlocked.Exchange(ref _shared, _readIdx) & 3;
+            return _snap[_readIdx];
+        }
+
+        private SimulationStats BuildStats()
+        {
+            int n = _ps.Count;
+            float[] m = _ps.Mass;
+            double total = 0;
+            int heaviest = -1;
+            for (int i = 0; i < n; i++)
+            {
+                total += m[i];
+                if (heaviest < 0 || m[i] > m[heaviest]) heaviest = i;
+            }
+            int star = heaviest >= 0 && m[heaviest] > 0.5 * total ? heaviest : -1;
+
+            Span<float> top = stackalloc float[TopN];
+            int topCount = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (i == star) continue;
+                float v = m[i];
+                if (topCount < TopN) { top[topCount++] = v; SiftUp(top, topCount); }
+                else if (v > top[TopN - 1]) { top[TopN - 1] = v; SiftUp(top, TopN); }
+            }
+            var largest = top.Slice(0, topCount).ToArray();
+
+            return new SimulationStats
+            {
+                StepCount = _steps,
+                SimTime = _simTime,
+                Count = n,
+                Merges = _merges,
+                Bounces = _bounces,
+                Escaped = _escaped,
+                StepsPerSecond = _stepSecondsEma > 0 ? 1.0 / _stepSecondsEma : 0,
+                StarMass = star >= 0 ? m[star] : 0f,
+                LargestMasses = largest,
+                GrainMass = _grainMass,
+            };
+        }
+
+        // Keeps a small array sorted descending after its last element changed.
+        private static void SiftUp(Span<float> a, int count)
+        {
+            for (int i = count - 1; i > 0 && a[i] > a[i - 1]; i--)
+                (a[i], a[i - 1]) = (a[i - 1], a[i]);
+        }
+
+        // ---- background thread -----------------------------------------------------------------
+
+        /// <summary>Starts (or resumes) stepping on the background thread.</summary>
+        public void Start()
+        {
+            if (_stop) throw new ObjectDisposedException(nameof(PlanetSimulation));
+            if (_thread == null)
+            {
+                _thread = new Thread(RunLoop) { IsBackground = true, Name = "PlanetSimulation" };
+                _thread.Start();
+            }
+            _running.Set();
+        }
+
+        public void Pause() => _running.Reset();
+
+        private void RunLoop()
+        {
+            while (!_stop)
+            {
+                _running.Wait();
+                if (_stop) break;
+                lock (_gate)
+                {
+                    if (!_stop) StepCore();
+                }
+            }
+        }
+
+        /// <summary>Stops the background thread and waits for it to finish its current step.</summary>
+        public void Dispose()
+        {
+            _stop = true;
+            _running.Set();
+            _thread?.Join(TimeSpan.FromSeconds(10));
+        }
+    }
+}
