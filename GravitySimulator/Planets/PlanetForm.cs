@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -29,8 +29,8 @@ namespace GravitySimulator.Planets
 
         private ComboBox _preset;
         private NumericUpDown _count, _mergeK, _restitution;
-        private TrackBar _timeSpeed;
-        private Label _timeSpeedLabel, _readout;
+        private TrackBar _timeSpeed, _discMass;
+        private Label _timeSpeedLabel, _discMassLabel, _readout;
         private Button _start, _pause, _reset, _screenshot;
 
         private Point _lastMouse;
@@ -38,6 +38,10 @@ namespace GravitySimulator.Planets
         private int _frames;
         private double _fps;
         private readonly Stopwatch _fpsClock = Stopwatch.StartNew();
+
+        // Disc-mass slider stops, as a fraction of the star's mass.
+        private static readonly float[] DiscMassSteps = { 0.001f, 0.005f, 0.01f, 0.02f, 0.05f, 0.10f, 0.20f, 0.30f };
+        private const int DefaultDiscMassStep = 5;
 
         public PlanetForm()
         {
@@ -95,6 +99,11 @@ namespace GravitySimulator.Planets
             _timeSpeedLabel = new Label { AutoSize = true };
             _timeSpeed.ValueChanged += (s, e) => ApplyParameters();
 
+            _discMass = new TrackBar { Minimum = 0, Maximum = DiscMassSteps.Length - 1, Value = DefaultDiscMassStep, TickFrequency = 1, Width = 220 };
+            _discMassLabel = new Label { AutoSize = true };
+            _discMass.ValueChanged += (s, e) => UpdateDiscMassLabel();
+            UpdateDiscMassLabel();
+
             _mergeK = new NumericUpDown { Minimum = 0.1m, Maximum = 10m, Increment = 0.1m, DecimalPlaces = 1, Value = 1.0m, Width = 220 };
             _mergeK.ValueChanged += (s, e) => ApplyParameters();
             _restitution = new NumericUpDown { Minimum = 0m, Maximum = 1m, Increment = 0.05m, DecimalPlaces = 2, Value = 0.5m, Width = 220 };
@@ -125,6 +134,7 @@ namespace GravitySimulator.Planets
             {
                 Caption("Preset (applies on Reset)"), _preset,
                 Caption("Particles (applies on Reset)"), _count,
+                Caption("Disc mass, % of star (applies on Reset)"), _discMass, _discMassLabel,
                 Caption("Time speed"), _timeSpeed, _timeSpeedLabel,
                 Caption("Merge threshold k (x escape speed)"), _mergeK,
                 Caption("Restitution e (bounces)"), _restitution,
@@ -168,7 +178,7 @@ namespace GravitySimulator.Planets
             bool wasRunning = _sim.IsRunning;
             _sim.Pause();
             var kind = _preset.SelectedIndex == 1 ? PresetKind.SpinningCloud : PresetKind.DiscAroundStar;
-            _sim.Load(Presets.Create(kind, (int)_count.Value, Environment.TickCount));
+            _sim.Load(Presets.Create(kind, (int)_count.Value, Environment.TickCount, DiscMassSteps[_discMass.Value]));
             _camera.Distance = kind == PresetKind.DiscAroundStar ? 5f : 4f;
             if (wasRunning) _sim.Start();
             _gl.Invalidate();
@@ -183,6 +193,9 @@ namespace GravitySimulator.Planets
             p.MergeThreshold = (float)_mergeK.Value;
             p.Restitution = (float)_restitution.Value;
         }
+
+        private void UpdateDiscMassLabel() =>
+            _discMassLabel.Text = (DiscMassSteps[_discMass.Value] * 100f).ToString("0.#", CultureInfo.InvariantCulture) + "%";
 
         private void OnGlMouseMove(object sender, MouseEventArgs e)
         {

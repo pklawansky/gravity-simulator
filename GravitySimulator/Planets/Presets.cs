@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Numerics;
 
 namespace GravitySimulator.Planets
@@ -19,28 +19,33 @@ namespace GravitySimulator.Planets
         public const float DiscThickness = 0.01f;   // Gaussian sigma in z
         public const float DiscDispersion = 0.003f; // velocity dispersion as a fraction of circular speed
         public const float DustRadius = 0.004f;
+        /// <summary>Total dust mass as a fraction of the star's mass, used when no fraction is given.</summary>
+        public const float DefaultDiscMassFraction = 0.001f;
 
-        public static ParticleSystem Create(PresetKind kind, int count, int seed) => kind switch
+        public static ParticleSystem Create(PresetKind kind, int count, int seed, float discMassFraction = DefaultDiscMassFraction) => kind switch
         {
             PresetKind.SpinningCloud => SpinningCloud(count, seed),
-            _ => DiscAroundStar(count, seed),
+            _ => DiscAroundStar(count, seed, discMassFraction),
         };
 
         /// <summary>
-        /// Index 0 is a central star of mass 1 (1000x the total dust mass); the remaining count-1
-        /// particles are dust in a thin disc with near-circular prograde (about +Z) Keplerian
+        /// Index 0 is a central star of mass 1; the remaining count-1 particles share a total dust mass
+        /// of <paramref name="discMassFraction"/> x the star's mass. They
+        /// form a thin disc with near-circular prograde (about +Z) Keplerian
         /// velocities plus a small random dispersion. Total momentum is zero.
         /// </summary>
-        public static ParticleSystem DiscAroundStar(int count, int seed)
+        public static ParticleSystem DiscAroundStar(int count, int seed, float discMassFraction = DefaultDiscMassFraction)
         {
             if (count < 1) throw new ArgumentOutOfRangeException(nameof(count));
+            if (!(discMassFraction > 0f)) throw new ArgumentOutOfRangeException(nameof(discMassFraction));
             var rng = new Random(seed);
             var ps = new ParticleSystem(count);
             ps.Add(Vector3.Zero, Vector3.Zero, StarMass, StarRadius);
 
             int dustCount = count - 1;
             if (dustCount == 0) return ps;
-            float dustMass = StarMass / 1000f / dustCount;
+            float discMass = StarMass * discMassFraction;
+            float dustMass = discMass / dustCount;
             Vector3 momentum = Vector3.Zero;
             for (int i = 0; i < dustCount; i++)
             {
@@ -51,7 +56,7 @@ namespace GravitySimulator.Planets
                 var pos = new Vector3(r * MathF.Cos(a), r * MathF.Sin(a), z);
 
                 // Enclosed dust mass (uniform-in-r disc) adds slightly to the star's pull.
-                float enclosed = StarMass + StarMass / 1000f * (r - DiscInner) / (DiscOuter - DiscInner);
+                float enclosed = StarMass + discMass * (r - DiscInner) / (DiscOuter - DiscInner);
                 float vc = MathF.Sqrt(enclosed / r);
                 var vel = new Vector3(-MathF.Sin(a), MathF.Cos(a), 0f) * vc;
                 vel += new Vector3(Gaussian(rng), Gaussian(rng), Gaussian(rng) * 0.5f) * (DiscDispersion * vc);

@@ -45,6 +45,20 @@ public class PresetsTests
         Assert.InRange(ratio, 900, 1100);
     }
 
+    [Theory]
+    [InlineData(0.001f)]
+    [InlineData(0.10f)]
+    [InlineData(0.30f)]
+    public void Disc_DustMassFollowsFraction_AndMomentumIsZero(float fraction)
+    {
+        var ps = Presets.DiscAroundStar(5_000, seed: 3, fraction);
+        double dust = 0;
+        for (int i = 1; i < ps.Count; i++) dust += ps.Mass[i];
+        Assert.Equal(Presets.StarMass, ps.Mass[0]);
+        Assert.InRange(dust / Presets.StarMass, fraction * 0.999, fraction * 1.001);
+        Assert.True(TestHelpers.TotalMomentum(ps).Length() < 1e-6f);
+    }
+
     [Fact]
     public void Cloud_RotatesAboutPlusZ()
     {
