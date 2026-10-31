@@ -22,11 +22,16 @@ namespace GravitySimulator.Planets
         /// <summary>
         /// Outcomes: collision fragments may raise the live particle count up to this ceiling (or to the count at
         /// Load, if that is larger); at the ceiling, further fragments are folded into the largest fragment or the
-        /// remnant. Chosen from measured step cost on a 32-core machine ("faster collision sweep" amendment, 2026-10-31,
-        /// of the collision outcomes spec): the largest round count that still sustains about 5 steps/s.
+        /// remnant. Chosen from measured step cost on a 32-core machine with an RTX 4070 Laptop GPU ("GPU gravity"
+        /// amendment, 2026-10-31, of the collision outcomes spec): the largest round count that still sustains about
+        /// 5 steps/s. <see cref="DefaultMaxLiveParticles"/> assumes GPU gravity; the UI uses
+        /// <see cref="CpuMaxLiveParticles"/> when gravity falls back to the CPU tree.
         /// </summary>
         public int MaxLiveParticles { get; set; } = DefaultMaxLiveParticles;
-        public const int DefaultMaxLiveParticles = 150_000;
+        /// <summary>Ceiling with GPU gravity (about 5.3 steps/s held there).</summary>
+        public const int DefaultMaxLiveParticles = 450_000;
+        /// <summary>Ceiling with CPU gravity (about 4.6-4.9 steps/s held there).</summary>
+        public const int CpuMaxLiveParticles = 150_000;
         /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
         public float MaxStepsPerSecond { get; set; } = 120f;
         /// <summary>
@@ -89,7 +94,10 @@ namespace GravitySimulator.Planets
         public double KickDrift { get; init; }
         /// <summary>Octree build (CPU, both gravity backends).</summary>
         public double TreeBuild { get; init; }
-        /// <summary>Gravity (CPU walk, or GPU flatten + upload + walk + read-back), force contributors and the closing kick.</summary>
+        /// <summary>
+        /// Gravity (CPU walk, or GPU flatten + upload + walk + read-back), force contributors and the closing kick;
+        /// on the GPU path also the reorder of the bodies into tree order.
+        /// </summary>
         public double Gravity { get; init; }
         /// <summary>Of <see cref="Gravity"/>, GPU path only: flatten, pack and order on the CPU.</summary>
         public double GpuFlatten { get; init; }
@@ -168,6 +176,7 @@ namespace GravitySimulator.Planets
         private RadiationPressure _radiation;
 
         private GpuGravity _gpu;
+        private ParticleSystem _spare; // Reorder scratch (GPU path)
         private volatile string _gravityBackend = CpuBackendName;
         private const string CpuBackendName = "CPU Barnes-Hut";
 
@@ -382,6 +391,10 @@ namespace GravitySimulator.Planets
             {
                 foreach (var f in ForceContributors) f.AddAccelerations(_ps);
                 RunChunks(_kickChunk);
+                // Keep the bodies in tree order so the next tree build, flatten and collision sweep walk
+                // memory coherently (2-3x faster builds at 400k). GPU path only: the CPU path keeps its order,
+                // which the golden-hash tests pin.
+                _ps.Reorder(_gpu.LastOrder, _spare ??= new ParticleSystem(_ps.Capacity));
                 return;
             }
             if (ForceContributors.Count == 0) { RunChunks(_forceKickChunk); return; }

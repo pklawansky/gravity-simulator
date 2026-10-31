@@ -125,11 +125,18 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
         output.WriteLine("backend: " + gpu.GravityBackend);
         cpu.Load(start.Clone());
         gpu.Load(start.Clone());
+        // The GPU path keeps the bodies in tree order, so match them by position (distinct in this disc).
+        var byPos = new Dictionary<Vector3, int>();
+        for (int i = 0; i < cpu.Particles.Count; i++) byPos[cpu.Particles.Position[i]] = i;
+        Assert.Equal(cpu.Particles.Count, gpu.Particles.Count);
         double worst = 0;
-        for (int i = 0; i < cpu.Particles.Count; i++)
+        for (int k = 0; k < gpu.Particles.Count; k++)
         {
+            int i = byPos[gpu.Particles.Position[k]];
             Vector3 c = cpu.Particles.Acceleration[i];
-            worst = Math.Max(worst, (c - gpu.Particles.Acceleration[i]).Length() / c.Length());
+            worst = Math.Max(worst, (c - gpu.Particles.Acceleration[k]).Length() / c.Length());
+            Assert.Equal(cpu.Particles.Mass[i], gpu.Particles.Mass[k]);
+            Assert.Equal(cpu.Particles.Velocity[i], gpu.Particles.Velocity[k]);
         }
         output.WriteLine($"max relative acceleration difference at Load: {worst:E2}");
         Assert.True(worst < 1e-4, $"GPU and CPU accelerations differ by up to {worst:E3}");

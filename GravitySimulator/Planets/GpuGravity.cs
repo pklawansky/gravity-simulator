@@ -52,6 +52,11 @@ namespace GravitySimulator.Planets
         public double LastFlattenMs { get; private set; }
         /// <summary>Wall time of the last <see cref="Compute"/> on the GL thread: upload, walk, read-back (ms).</summary>
         public double LastGpuMs { get; private set; }
+        /// <summary>
+        /// The particle order of the last <see cref="Compute"/> (first <c>ps.Count</c> entries): the tree's walk
+        /// order, a permutation of the particle indices that is spatially coherent. Overwritten by the next call.
+        /// </summary>
+        public int[] LastOrder => _order;
         /// <summary>CPU time of the last <see cref="Compute"/> scattering the accelerations back (ms).</summary>
         public double LastScatterMs { get; private set; }
 

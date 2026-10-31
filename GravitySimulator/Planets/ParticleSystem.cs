@@ -86,6 +86,39 @@ namespace GravitySimulator.Planets
             return removed;
         }
 
+        /// <summary>
+        /// Reorders the live entries so that entry k becomes old entry <paramref name="order"/>[k] (a permutation
+        /// of 0..Count-1). Gathers into the arrays of <paramref name="scratch"/> and swaps them in, so neither
+        /// side allocates; <paramref name="scratch"/> is resized to this capacity when it differs and must not
+        /// be used for anything else.
+        /// </summary>
+        public void Reorder(int[] order, ParticleSystem scratch)
+        {
+            int n = Count;
+            if (scratch.Capacity != Capacity) scratch.Grow(Capacity);
+            Vector3[] p = Position, v = Velocity, a = Acceleration, p2 = scratch.Position, v2 = scratch.Velocity, a2 = scratch.Acceleration;
+            float[] m = Mass, r = Radius, g = Age, m2 = scratch.Mass, r2 = scratch.Radius, g2 = scratch.Age;
+            BodyClass[] c = Class, c2 = scratch.Class;
+            int chunks = n < 16_384 ? 1 : Environment.ProcessorCount * 2;
+            int size = (n + chunks - 1) / Math.Max(1, chunks);
+            System.Threading.Tasks.Parallel.For(0, chunks, ch =>
+            {
+                int end = Math.Min(n, (ch + 1) * size);
+                for (int k = ch * size; k < end; k++)
+                {
+                    int i = order[k];
+                    p2[k] = p[i]; v2[k] = v[i]; a2[k] = a[i]; m2[k] = m[i]; r2[k] = r[i]; c2[k] = c[i]; g2[k] = g[i];
+                }
+            });
+            (Position, scratch.Position) = (scratch.Position, Position);
+            (Velocity, scratch.Velocity) = (scratch.Velocity, Velocity);
+            (Acceleration, scratch.Acceleration) = (scratch.Acceleration, Acceleration);
+            (Mass, scratch.Mass) = (scratch.Mass, Mass);
+            (Radius, scratch.Radius) = (scratch.Radius, Radius);
+            (Class, scratch.Class) = (scratch.Class, Class);
+            (Age, scratch.Age) = (scratch.Age, Age);
+        }
+
         public ParticleSystem Clone()
         {
             var copy = new ParticleSystem(Capacity);
