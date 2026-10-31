@@ -40,4 +40,8 @@
   <ItemGroup>
     <Content Include="RefFiles\OneLoneCoder_olcEngine3D_Part4.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="OpenTK" Version="4.9.4" />
+    <PackageReference Include="OpenTK.GLControl" Version="4.0.2" />
+  </ItemGroup>
 </Project>
