@@ -425,6 +425,8 @@ namespace GravitySimulator.Sph
             p.Set("uEta", _p.Eta);
             p.Set("uHMin", _p.HMin);
             p.Set("uHMax", _p.HMax);
+            p.Set("uCoolBeta", _p.CoolingBeta);
+            p.Set("uCoolFloor", _p.CoolingFloor);
             Bind(_posH.Front, _vel.Front, _acc.Front, _massId.Front, _rhoP, _ctrl);
             p.Dispatch(Count, WG);
             Barrier();
@@ -659,6 +661,8 @@ namespace GravitySimulator.Sph
             p.Set("uAlpha", _p.Alpha);
             p.Set("uBeta", _p.Beta);
             p.Set("uDamping", Damping);
+            p.Set("uCoolBeta", _p.CoolingBeta);
+            p.Set("uCoolFloor", _p.CoolingFloor);
             Bind(_vel.Front, accFront ? _acc.Front : _acc.Back, _posH.Front, _rhoP, _extra, _ctrl, _massId.Front);
             p.Dispatch(Count, WG);
             Barrier();

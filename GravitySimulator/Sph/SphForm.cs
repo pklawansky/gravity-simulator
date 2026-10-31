@@ -29,9 +29,9 @@ namespace GravitySimulator.Sph
         private string _gpuName = "", _lastScreenshot, _error;
 
         private ComboBox _preset, _colorMode;
-        private NumericUpDown _count, _soundSpeed, _rhoCrit, _gamma;
+        private NumericUpDown _count, _soundSpeed, _rhoCrit, _gamma, _cooling;
         private TrackBar _timeSpeed;
-        private Label _timeSpeedLabel, _readout, _soundSpeedCaption, _rhoCritCaption, _gammaCaption;
+        private Label _timeSpeedLabel, _readout, _soundSpeedCaption, _rhoCritCaption, _gammaCaption, _coolingCaption;
         private Button _start, _pause, _reset, _screenshot;
 
         private Point _lastMouse;
@@ -113,9 +113,12 @@ namespace GravitySimulator.Sph
             _rhoCrit.ValueChanged += (s, e) => ApplyParameters();
             _gamma = new NumericUpDown { Minimum = 1.01m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 3, Value = 1.667m, Width = 230 };
             _gamma.ValueChanged += (s, e) => ApplyParameters();
+            _cooling = new NumericUpDown { Minimum = 0m, Maximum = 5m, Increment = 0.05m, DecimalPlaces = 3, Value = (decimal)SphPresets.CollideCoolingBeta, Width = 230 };
+            _cooling.ValueChanged += (s, e) => ApplyParameters();
             _soundSpeedCaption = Caption("Isothermal sound speed c_s");
             _rhoCritCaption = Caption("ρ_crit (x mean cloud density)");
             _gammaCaption = Caption("Adiabatic index γ");
+            _coolingCaption = Caption("Cooling time (x free-fall time, 0 = off)");
 
             _start = new Button { Text = "Start", Width = 110 };
             _pause = new Button { Text = "Pause", Width = 110 };
@@ -147,6 +150,7 @@ namespace GravitySimulator.Sph
                 _soundSpeedCaption, _soundSpeed,
                 _rhoCritCaption, _rhoCrit,
                 _gammaCaption, _gamma,
+                _coolingCaption, _cooling,
                 buttons1, buttons2,
                 Caption("Drag to orbit, wheel to zoom"),
                 _readout,
@@ -228,7 +232,11 @@ namespace GravitySimulator.Sph
                 p.SoundSpeed = (float)_soundSpeed.Value;
                 p.CriticalDensity = (float)_rhoCrit.Value * MeanDensity(sc.Kind);
             }
-            else p.Gamma = (float)_gamma.Value;
+            else
+            {
+                p.Gamma = (float)_gamma.Value;
+                if (_cooling.Visible) p.CoolingBeta = (float)_cooling.Value;
+            }
         }
 
         private static float MeanDensity(SphPresetKind kind) => kind switch
@@ -245,9 +253,11 @@ namespace GravitySimulator.Sph
             _soundSpeedCaption.Visible = _soundSpeed.Visible = baro;
             _rhoCritCaption.Visible = _rhoCrit.Visible = baro;
             _gammaCaption.Visible = _gamma.Visible = !baro;
+            _coolingCaption.Visible = _cooling.Visible = kind == SphPresetKind.CollidingClouds;
             _soundSpeed.Value = (decimal)SphPresets.CloudSoundSpeed;
             _rhoCrit.Value = (decimal)SphPresets.CloudCriticalDensityFactor;
             _gamma.Value = 1.667m;
+            _cooling.Value = (decimal)SphPresets.CollideCoolingBeta;
         }
 
         private void OnTick()

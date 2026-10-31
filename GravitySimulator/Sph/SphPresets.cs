@@ -9,7 +9,7 @@ namespace GravitySimulator.Sph
     {
         /// <summary>Turbulent sphere, barotropic EOS; fragments into filaments and forms stars (M☉, pc).</summary>
         CollapsingCloud,
-        /// <summary>Two clouds meeting head-on, ideal gas; a shock layer forms and fragments (M☉, pc).</summary>
+        /// <summary>Two clouds meeting head-on, cooling ideal gas; a shock layer forms and fragments (M☉, pc).</summary>
         CollidingClouds,
         /// <summary>A polytropic gas star on a parabolic orbit past a black hole (M☉, AU).</summary>
         TidalDisruption,
@@ -54,6 +54,10 @@ namespace GravitySimulator.Sph
 
         // Colliding clouds (M☉, pc).
         public const float CollideMass = 300f, CollideRadius = 0.6f, CollideSpeed = 25f, CollideSoundSpeed = 5f;
+        /// <summary>Cooling time of the colliding clouds' gas in local free-fall times (t_cool = β t_ff).</summary>
+        public const float CollideCoolingBeta = 0.05f;
+        /// <summary>Gas temperature implied by c_s = 0.33 km/s (γ = 5/3, μ = 2.33) and the cooling floor (typical of molecular clouds).</summary>
+        public const float CollideInitialTemperatureK = 18.3f, CollideFloorTemperatureK = 10f;
         /// <summary>ρ_crit of the collapsing cloud in units of its mean density (stiffening well above ρ_sink).</summary>
         public const float CloudCriticalDensityFactor = 300f;
 
@@ -130,8 +134,8 @@ namespace GravitySimulator.Sph
 
         /// <summary>
         /// Two turbulent clouds (300 M☉, 0.6 pc each, slightly off-axis) approaching head-on at
-        /// 2 x 1.6 km/s along x, ideal gas γ = 5/3 at c_s = 0.33 km/s; the shocked layer is heated, then
-        /// fragments under gravity.
+        /// 2 x 1.6 km/s along x, ideal gas γ = 5/3 at c_s = 0.33 km/s (18 K) with radiative cooling to 10 K;
+        /// the shock heat is radiated away, so the compressed layer fragments under gravity into sinks.
         /// </summary>
         public static SphScenario CollidingClouds(int count, int seed)
         {
@@ -165,10 +169,17 @@ namespace GravitySimulator.Sph
                 Eos = EquationOfState.IdealGas,
                 Gamma = gamma,
                 HMin = hMean / 5f,
-                HMax = 1.5f * hMean,
+                // h ≤ h_mean: the grid cell is 2 h_max, so a smaller cap keeps the dense shock layer's
+                // neighbour search cheap (~2x the steps/s); only gas below the mean density is clamped.
+                HMax = hMean,
                 SinkDensity = rhoSink,
                 SinkRadius = 2f * eta * MathF.Cbrt(m / rhoSink),
                 MinInternalEnergy = 0.1f * u,
+                // Radiative cooling down to 10 K (see SphReference.Cool): the shock heat
+                // is radiated away within a fraction of a free-fall time, so the compressed layer stays
+                // cold and dense enough to fragment into sinks.
+                CoolingBeta = CollideCoolingBeta,
+                CoolingFloor = CollideFloorTemperatureK / CollideInitialTemperatureK * u,
                 Theta = 0.6f,
             };
             return new SphScenario

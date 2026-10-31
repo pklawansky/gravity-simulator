@@ -12,6 +12,7 @@ uniform int uKick;       // 1: half-kick + drift
 uniform int uUpdateH;    // 1: h = eta (m/rho)^(1/3)
 uniform int uIdeal;
 uniform float uUMin, uEta, uHMin, uHMax;
+uniform float uCoolBeta, uCoolFloor; // radiative cooling (0 = off), see coolU
 void main()
 {
     uint i = gl_GlobalInvocationID.x;
@@ -25,7 +26,7 @@ void main()
         vec4 a = acc[i];
         float hdt = 0.5 * uDt;
         v.xyz += a.xyz * hdt;
-        if (uIdeal == 1) v.w = max(v.w + a.w * hdt, uUMin);
+        if (uIdeal == 1) v.w = coolU(max(v.w + a.w * hdt, uUMin), rhoP[i].x, hdt, uCoolBeta, uCoolFloor);
         p.xyz += v.xyz * uDt;
         vel[i] = v;
     }

@@ -26,6 +26,15 @@ vec3 gradW(vec3 xij, float r, float h)
     return xij * (-5.0 * SIGMA * t * t * t / (h2 * h2 * h));
 }
 
+// Radiative cooling over dt (mirrors SphReference.Cool): u relaxes to uFloor with t_cool = beta t_ff,
+// t_ff = sqrt(3 pi / (32 rho)), integrated exactly (stable for any dt, never below the floor).
+float coolU(float u, float rho, float dt, float beta, float uFloor)
+{
+    if (!(beta > 0.0) || !(u > uFloor) || !(dt > 0.0)) return u;
+    float tCool = beta * sqrt(3.0 * 3.14159265 / (32.0 * max(rho, 1e-30)));
+    return uFloor + (u - uFloor) * exp(-dt / tCool);
+}
+
 ivec3 cellOf(vec3 x, float cell)
 {
     return ivec3(clamp(floor(x / cell), vec3(-1073741824.0), vec3(1073741823.0)));

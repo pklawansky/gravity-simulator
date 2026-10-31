@@ -50,6 +50,14 @@ namespace GravitySimulator.Sph
         /// <summary>Floor on the internal energy u.</summary>
         public float MinInternalEnergy { get; set; } = 0f;
 
+        /// <summary>
+        /// Ideal gas only: radiative cooling with t_cool = β t_ff(ρ), relaxing u toward
+        /// <see cref="CoolingFloor"/> (see <see cref="SphReference.Cool"/>). 0 = adiabatic (no cooling).
+        /// </summary>
+        public float CoolingBeta { get; set; } = 0f;
+        /// <summary>Floor temperature of the cooling, as an internal energy u (cooling never goes below it).</summary>
+        public float CoolingFloor { get; set; } = 0f;
+
         /// <summary>A converging, bound particle denser than this becomes a sink (∞ = no sinks).</summary>
         public float SinkDensity { get; set; } = float.PositiveInfinity;
         /// <summary>Accretion radius of gas-formed sinks; also the radius a new sink gathers its gas from.</summary>

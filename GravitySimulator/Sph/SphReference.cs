@@ -316,15 +316,55 @@ namespace GravitySimulator.Sph
             Dt = ComputeTimeStep(s);
         }
 
+        /// <summary>Energy removed by cooling so far (Σ m Δu); <see cref="Energies"/> plus this is conserved.</summary>
+        public double RadiatedEnergy { get; private set; }
+
+        /// <summary>Cooling time t_cool = β t_ff, with the free-fall time t_ff = sqrt(3π / (32 G ρ)) (G = 1).</summary>
+        public static float CoolingTime(float rho, SphParameters p) =>
+            p.CoolingBeta * MathF.Sqrt(3f * MathF.PI / (32f * MathF.Max(rho, 1e-30f)));
+
+        /// <summary>
+        /// Radiative cooling over <paramref name="dt"/>: du/dt = -(u - u_floor) / t_cool, integrated exactly,
+        /// u ← u_floor + (u - u_floor) exp(-Δt / t_cool). This is the cooling-time ("β-cooling")
+        /// prescription of Gammie (2001, ApJ 553, 174) with the dynamical time taken as the local free-fall
+        /// time, here relaxing to a floor temperature instead of zero. The exact exponential is
+        /// unconditionally stable whatever Δt / t_cool the CFL step gives, never undershoots the floor and
+        /// never heats (gas at or below the floor is untouched). A small β makes shocked gas nearly
+        /// isothermal, as real molecular gas is (cooling times ≪ dynamical times), which lets the shocked
+        /// layer of colliding clouds fragment (Whitworth et al. 1994, MNRAS 268, 291). Mirrored in
+        /// common.glsl (coolU), applied after each half-kick of u on both CPU and GPU.
+        /// </summary>
+        public static float Cool(float u, float rho, float dt, SphParameters p)
+        {
+            if (!(p.CoolingBeta > 0f) || !(u > p.CoolingFloor) || !(dt > 0f)) return u;
+            return p.CoolingFloor + (u - p.CoolingFloor) * MathF.Exp(-dt / CoolingTime(rho, p));
+        }
+
+        private bool Cooling => _p.Eos == EquationOfState.IdealGas && _p.CoolingBeta > 0f;
+
+        // Half-kick of u (du/dt, floor) followed by the cooling over the same half step.
+        private void KickU(SphState s, int i, float half, ref double radiated)
+        {
+            float u = MathF.Max(s.U[i] + s.DuDt[i] * half, _p.MinInternalEnergy);
+            if (Cooling)
+            {
+                float cooled = Cool(u, s.Density[i], half, _p);
+                radiated += s.Mass[i] * (double)(u - cooled);
+                u = cooled;
+            }
+            s.U[i] = u;
+        }
+
         public void Step(SphState s)
         {
             float dt = Dt, half = 0.5f * dt;
             bool ideal = _p.Eos == EquationOfState.IdealGas;
+            double radiated = 0;
             for (int i = 0; i < s.Count; i++)
             {
                 if (s.Mass[i] <= 0f) continue;
                 s.Velocity[i] += s.Acceleration[i] * half;
-                if (ideal) s.U[i] = MathF.Max(s.U[i] + s.DuDt[i] * half, _p.MinInternalEnergy);
+                if (ideal) KickU(s, i, half, ref radiated);
                 s.Position[i] += s.Velocity[i] * dt;
             }
             UpdateSmoothingLengths(s);
@@ -336,8 +376,9 @@ namespace GravitySimulator.Sph
             {
                 if (s.Mass[i] <= 0f) continue;
                 s.Velocity[i] += s.Acceleration[i] * half;
-                if (ideal) s.U[i] = MathF.Max(s.U[i] + s.DuDt[i] * half, _p.MinInternalEnergy);
+                if (ideal) KickU(s, i, half, ref radiated);
             }
+            RadiatedEnergy += radiated;
             Time += dt;
             Dt = ComputeTimeStep(s);
         }
