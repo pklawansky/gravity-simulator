@@ -168,6 +168,7 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
     [SkippableTheory]
     [InlineData(150_000, false)]
     [InlineData(150_000, true)]
+    [InlineData(350_000, true)]
     [InlineData(400_000, true)]
     [InlineData(450_000, true)]
     [InlineData(500_000, true)]
@@ -193,6 +194,42 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
         var s = sim.Stats;
         output.WriteLine($"held-at-ceiling {(gpu ? "GPU" : "CPU")} {ceiling}: live {liveStart}->{s.Count}, step {msStep:F1} ms ({1000.0 / msStep:F1} steps/s); " +
                          $"tree build {tree / steps:F1}, gravity {grav / steps:F1}, collisions {coll / steps:F1} ms; fragments {s.FragmentsCreated}, folded {s.FragmentsFoldedAtCeiling}");
+        Assert.True(msStep > 0);
+    }
+
+    /// <summary>
+    /// The heaviest held-at-ceiling load measured: the lightest disc (0.1% of the star) loaded at the ceiling.
+    /// Its grains barely merge, so nearly every contact sprays fragments and the live count stays pinned at the
+    /// ceiling (millions folded). 100 steps of warm-up, then 100 timed, with the per-phase split.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(150_000, false)]
+    [InlineData(150_000, true)]
+    [InlineData(300_000, true)]
+    [InlineData(350_000, true)]
+    [InlineData(400_000, true)]
+    [InlineData(450_000, true)]
+    public void LightDisc_HeldAtCeiling(int ceiling, bool gpu)
+    {
+        using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = ceiling });
+        if (gpu) Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        sim.Load(Presets.DiscAroundStar(ceiling, seed: 1, discMassFraction: 0.001f));
+        for (int i = 0; i < 100; i++) sim.Step();
+        const int steps = 100;
+        double tree = 0, grav = 0, coll = 0, total = 0;
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++)
+        {
+            sim.Step();
+            var t = sim.LastPhaseTimes;
+            tree += t.TreeBuild; grav += t.Gravity; coll += t.Collisions; total += t.Total;
+        }
+        sw.Stop();
+        Assert.True(!gpu || sim.GpuGravityActive, sim.GravityBackend);
+        double msStep = sw.Elapsed.TotalMilliseconds / steps;
+        var s = sim.Stats;
+        output.WriteLine($"light-disc {(gpu ? "GPU" : "CPU")} {ceiling}: live {s.Count}, step {msStep:F1} ms ({1000.0 / msStep:F1} steps/s); tree build {tree / steps:F1}, " +
+                         $"gravity {grav / steps:F1}, collisions {coll / steps:F1}, other {(total - tree - grav - coll) / steps:F1} ms; fragments {s.FragmentsCreated}, folded {s.FragmentsFoldedAtCeiling}");
         Assert.True(msStep > 0);
     }
 
