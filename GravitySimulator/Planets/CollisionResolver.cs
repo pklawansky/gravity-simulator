@@ -11,6 +11,14 @@ namespace GravitySimulator.Planets
     /// apart so it no longer overlaps. G = 1. A black hole never bounces: it always absorbs what
     /// touches it. Merged bodies take the class/age given by <see cref="StellarPhysics.MergeClass"/>
     /// (all bodies are Planet when the stellar model is off, so nothing changes there).
+    /// <para>
+    /// With <see cref="Model"/> = <see cref="CollisionModel.Outcomes"/>, Planet-Planet pairs instead follow
+    /// the Leinhardt &amp; Stewart (2012) regimes (<see cref="CollisionOutcomes"/>): perfect merge, partial
+    /// accretion, hit-and-run, erosion, catastrophic disruption. Fragments are real particles, appended
+    /// after the sweep (so they never collide in the step they are born), never lighter than
+    /// <see cref="MinFragmentMass"/>, and never pushing the live count above <see cref="MaxBodies"/>.
+    /// Every other pair keeps the rules above.
+    /// </para>
     /// </summary>
     public sealed class CollisionResolver
     {
@@ -20,11 +28,24 @@ namespace GravitySimulator.Planets
 
         public float MergeThreshold { get; set; } = 1f;
         public float Restitution { get; set; } = 0.5f;
+        /// <summary>Rule for Planet-Planet pairs. The resolver defaults to the original merge-or-bounce.</summary>
+        public CollisionModel Model { get; set; } = CollisionModel.MergeOrBounce;
+        /// <summary>Outcomes: live-count ceiling for fragments (0 = the count at the start of each Resolve).</summary>
+        public int MaxBodies { get; set; }
+        /// <summary>Outcomes: lightest allowed fragment, m0 (0 = the lighter body of each pair).</summary>
+        public float MinFragmentMass { get; set; }
 
         public int LastMerges { get; private set; }
         public int LastBounces { get; private set; }
         /// <summary>Merges this step where a black hole absorbed a star or another compact object.</summary>
         public int LastBlackHoleMergers { get; private set; }
+        /// <summary>Outcomes regimes this step (perfect merges count in <see cref="LastMerges"/>).</summary>
+        public int LastPartialAccretions { get; private set; }
+        public int LastHitAndRuns { get; private set; }
+        public int LastErosions { get; private set; }
+        public int LastDisruptions { get; private set; }
+        /// <summary>Fragments created this step.</summary>
+        public int LastFragments { get; private set; }
 
         // Reused buffers (grown on demand, never per step in steady state).
         private int[] _cellOf = Array.Empty<int>();
@@ -34,14 +55,25 @@ namespace GravitySimulator.Planets
         private readonly int[] _oversize = new int[MaxOversize];
         private bool[] _isOversize = Array.Empty<bool>();
 
+        // Outcomes: fragments waiting to be appended after the sweep, and bodies removed by
+        // non-merge outcomes (merges are counted in LastMerges). Grown on demand only.
+        private Vector3[] _fragPos = new Vector3[64], _fragVel = new Vector3[64], _fragAcc = new Vector3[64];
+        private float[] _fragMass = new float[64], _fragRadius = new float[64];
+        private int _fragCount, _removed, _startCount, _ceiling;
+        private uint _rng = 0x9E3779B9u;
+
         /// <summary>Resolves all current contacts, then compacts away merged-out bodies.</summary>
         public void Resolve(ParticleSystem ps)
         {
             LastMerges = 0;
             LastBounces = 0;
             LastBlackHoleMergers = 0;
+            LastPartialAccretions = LastHitAndRuns = LastErosions = LastDisruptions = LastFragments = 0;
+            _fragCount = _removed = 0;
             int n = ps.Count;
             if (n < 2) return;
+            _startCount = n;
+            _ceiling = MaxBodies > 0 ? MaxBodies : n;
             EnsureCapacity(ps.Capacity);
 
             // Classify oversize bodies (e.g. the star) and size the grid for the rest.
@@ -123,7 +155,12 @@ namespace GravitySimulator.Planets
                 }
             }
 
-            if (LastMerges > 0) ps.Compact();
+            if (LastMerges > 0 || _removed > 0) ps.Compact();
+            for (int k = 0; k < _fragCount; k++)
+            {
+                int f = ps.Add(_fragPos[k], _fragVel[k], _fragMass[k], _fragRadius[k]);
+                ps.Acceleration[f] = _fragAcc[k];
+            }
         }
 
         private void TryResolve(ParticleSystem ps, int i, int j)
@@ -138,6 +175,11 @@ namespace GravitySimulator.Planets
             float vEsc = MathF.Sqrt(2f * mt / rs);
 
             BodyClass ci = ps.Class[i], cj = ps.Class[j];
+            if (Model == CollisionModel.Outcomes && ci == BodyClass.Planet && cj == BodyClass.Planet)
+            {
+                ResolveOutcome(ps, i, j, dist2, rs);
+                return;
+            }
             if (vRel.Length() < MergeThreshold * vEsc || ci == BodyClass.BlackHole || cj == BodyClass.BlackHole)
             {
                 // Merge into the heavier body's slot; the other is marked dead (mass 0).
@@ -171,6 +213,188 @@ namespace GravitySimulator.Planets
             ps.Position[i] -= nrm * (overlap * m2 / mt);
             ps.Position[j] += nrm * (overlap * m1 / mt);
             LastBounces++;
+        }
+
+        // ---- collision outcomes (Planet-Planet pairs) ---------------------------------------------
+
+        private void ResolveOutcome(ParticleSystem ps, int i, int j, float dist2, float rs)
+        {
+            int t = ps.Mass[i] >= ps.Mass[j] ? i : j, p = t == i ? j : i; // target = heavier (merge keeps its slot)
+            float mt = ps.Mass[t], mp = ps.Mass[p], rt = ps.Radius[t], rp = ps.Radius[p], mtot = mt + mp;
+            Vector3 d = ps.Position[p] - ps.Position[t];
+            Vector3 vRel = ps.Velocity[p] - ps.Velocity[t];
+            var r = CollisionOutcomes.Classify(mt, mp, rt, rp, d, vRel);
+            float m0 = MinFragmentMass > 0f ? MinFragmentMass : mp;
+
+            if (r.Outcome == CollisionOutcome.HitAndRun)
+            {
+                ResolveHitAndRun(ps, t, p, r, dist2, rs, m0);
+                return;
+            }
+
+            // Every other outcome replaces the pair by one remnant (in the target's slot) at the centre of mass.
+            Vector3 xcm = (ps.Position[t] * mt + ps.Position[p] * mp) / mtot;
+            Vector3 vcm = (ps.Velocity[t] * mt + ps.Velocity[p] * mp) / mtot;
+            Vector3 acm = (ps.Acceleration[t] * mt + ps.Acceleration[p] * mp) / mtot;
+            float rho = CollisionOutcomes.MeanDensity(mt, mp, rt, rp);
+            ps.Mass[p] = 0f;
+            ps.Class[t] = BodyClass.Planet;
+            ps.Age[t] = 0f;
+            if (r.Outcome == CollisionOutcome.PerfectMerge)
+            {
+                // Same as a merge-or-bounce merge: radius from the summed volume.
+                ps.Position[t] = xcm;
+                ps.Velocity[t] = vcm;
+                ps.Acceleration[t] = acm;
+                ps.Radius[t] = MathF.Cbrt(rt * rt * rt + rp * rp * rp);
+                ps.Mass[t] = mtot;
+                LastMerges++;
+                return;
+            }
+            _removed++;
+            switch (r.Outcome)
+            {
+                case CollisionOutcome.PartialAccretion: LastPartialAccretions++; break;
+                case CollisionOutcome.Erosion: LastErosions++; break;
+                default: LastDisruptions++; break;
+            }
+            Vector3 axis = vRel.LengthSquared() > 0f ? Vector3.Normalize(vRel) : Vector3.Normalize(d);
+            EmitFragments(ps, t, mtot, mtot - r.LargestRemnant, rho, m0, xcm, vcm, acm, axis, -1);
+        }
+
+        // Target keeps its mass; normal velocities exchanged as a perfectly inelastic hit, tangential kept;
+        // pushed apart; the projectile keeps its reverse-impact remnant and sheds the rest as fragments.
+        private void ResolveHitAndRun(ParticleSystem ps, int t, int p, in CollisionResult r, float dist2, float rs, float m0)
+        {
+            LastHitAndRuns++;
+            float mt = ps.Mass[t], mp = ps.Mass[p], mtot = mt + mp;
+            float dist = MathF.Sqrt(dist2);
+            Vector3 d = ps.Position[p] - ps.Position[t];
+            Vector3 nrm = dist > 1e-12f ? d / dist : Vector3.UnitX;
+            float vtn = Vector3.Dot(ps.Velocity[t], nrm), vpn = Vector3.Dot(ps.Velocity[p], nrm);
+            float vcmn = (mt * vtn + mp * vpn) / mtot;
+            ps.Velocity[t] += nrm * (vcmn - vtn);
+            ps.Velocity[p] += nrm * (vcmn - vpn);
+            float overlap = rs * 1.0001f - dist; // a hair of clearance so a duplicate hash hit does not re-collide them
+            if (overlap > 0f)
+            {
+                ps.Position[t] -= nrm * (overlap * mp / mtot);
+                ps.Position[p] += nrm * (overlap * mt / mtot);
+            }
+
+            float rp = ps.Radius[p];
+            float rhoP = mp / (4f / 3f * MathF.PI * rp * rp * rp);
+            Vector3 tangential = ps.Velocity[p] - ps.Velocity[t];
+            Vector3 axis = tangential.LengthSquared() > 0f ? Vector3.Normalize(tangential) : nrm;
+            EmitFragments(ps, p, mp, mp - r.ProjectileRemnant, rhoP, m0, ps.Position[p], ps.Velocity[p], ps.Acceleration[p], axis, t);
+        }
+
+        /// <summary>
+        /// Turns body <paramref name="rem"/> into the remnant of a system of <paramref name="systemMass"/>, with
+        /// <paramref name="debris"/> split into fragments (none below m0, at most 8, within the ceiling; any
+        /// remainder stays in the remnant). Fragments leave in a 45-degree double cone around the impact
+        /// axis at 1.05-1.3 x the remnant's escape speed, sides chosen to balance momentum, stacked just
+        /// outside the remnant so none overlap. The whole set is then shifted (position and velocity) so its
+        /// centre of mass and momentum equal the inputs exactly: mass, momentum and centre of mass are
+        /// conserved and the set's net momentum relative to the centre of mass is zero.
+        /// </summary>
+        private void EmitFragments(ParticleSystem ps, int rem, float systemMass, float debris, float rho, float m0,
+            Vector3 x, Vector3 v, Vector3 a, Vector3 axis, int obstacle)
+        {
+            int budget = Math.Max(0, _ceiling - (_startCount - LastMerges - _removed) - _fragCount);
+            Span<float> masses = stackalloc float[CollisionOutcomes.MaxFragments];
+            int n = CollisionOutcomes.SplitFragments(debris, m0, budget, masses);
+            float fragMass = 0f;
+            for (int k = 0; k < n; k++) fragMass += masses[k];
+            float mr = systemMass - fragMass;
+            float rr = RadiusOf(mr, rho);
+            ps.Mass[rem] = mr;
+            ps.Radius[rem] = rr;
+            ps.Acceleration[rem] = a;
+            if (n == 0)
+            {
+                ps.Position[rem] = x;
+                ps.Velocity[rem] = v;
+                return;
+            }
+            EnsureFragmentCapacity(_fragCount + n);
+
+            float vEsc = MathF.Sqrt(2f * mr / rr);
+            Vector3 e1 = Vector3.Normalize(Vector3.Cross(axis, MathF.Abs(axis.X) < 0.9f ? Vector3.UnitX : Vector3.UnitY));
+            Vector3 e2 = Vector3.Cross(axis, e1);
+            const float CosHalfAngle = 0.70710678f; // 45-degree cone
+            float plusMass = 0f, minusMass = 0f, plusReach = rr, minusReach = rr;
+            Vector3 sumOffset = Vector3.Zero, sumMomentum = Vector3.Zero;
+            for (int k = 0; k < n; k++)
+            {
+                float m = masses[k], r = RadiusOf(m, rho);
+                bool plus = plusMass <= minusMass;
+                float cosT = 1f - NextFloat() * (1f - CosHalfAngle), sinT = MathF.Sqrt(MathF.Max(0f, 1f - cosT * cosT));
+                float phi = NextFloat() * MathF.Tau;
+                Vector3 dir = (plus ? axis : -axis) * cosT + (e1 * MathF.Cos(phi) + e2 * MathF.Sin(phi)) * sinT;
+                // Stack outward on each side: |p_k - p_j| >= |p_k| - |p_j| keeps one side's fragments apart,
+                // and the two cones are at least 90 degrees apart.
+                float dist = ((plus ? plusReach : minusReach) + r) * 1.001f;
+                if (obstacle >= 0) dist = ClearObstacle(ps, obstacle, x, dir, dist, r);
+                if (plus) { plusMass += m; plusReach = dist + r; }
+                else { minusMass += m; minusReach = dist + r; }
+                Vector3 offset = dir * dist;
+                Vector3 u = dir * (vEsc * (1.05f + 0.25f * NextFloat()));
+                int f = _fragCount++;
+                _fragPos[f] = offset; // relative to x until the shift below
+                _fragVel[f] = u;      // relative to v
+                _fragAcc[f] = a;
+                _fragMass[f] = m;
+                _fragRadius[f] = r;
+                sumOffset += offset * m;
+                sumMomentum += u * m;
+            }
+            Vector3 dx = sumOffset / systemMass, dv = sumMomentum / systemMass;
+            ps.Position[rem] = x - dx;
+            ps.Velocity[rem] = v - dv;
+            for (int f = _fragCount - n; f < _fragCount; f++)
+            {
+                _fragPos[f] = x + (_fragPos[f] - dx);
+                _fragVel[f] = v + (_fragVel[f] - dv);
+            }
+            LastFragments += n;
+        }
+
+        // Pushes a fragment further out along its direction until it clears the obstacle (the hit-and-run target).
+        private static float ClearObstacle(ParticleSystem ps, int obstacle, Vector3 x, Vector3 dir, float dist, float r)
+        {
+            Vector3 c = ps.Position[obstacle] - x;
+            float clear = ps.Radius[obstacle] + r;
+            // |dir s - c| < clear for s in (s1, s2): roots of s^2 - 2 s (dir.c) + |c|^2 - clear^2.
+            float bc = Vector3.Dot(dir, c), disc = bc * bc - (c.LengthSquared() - clear * clear);
+            if (disc > 0f)
+            {
+                float root = MathF.Sqrt(disc);
+                if (dist > bc - root && dist < bc + root) dist = (bc + root) * 1.001f;
+            }
+            return dist;
+        }
+
+        private static float RadiusOf(float mass, float rho) => MathF.Cbrt(3f * mass / (4f * MathF.PI * rho));
+
+        // xorshift32 in [0, 1): deterministic and allocation-free.
+        private float NextFloat()
+        {
+            uint s = _rng;
+            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            _rng = s;
+            return (s >> 8) * (1f / 16777216f);
+        }
+
+        private void EnsureFragmentCapacity(int needed)
+        {
+            if (needed <= _fragMass.Length) return;
+            int size = Math.Max(needed, _fragMass.Length * 2);
+            Array.Resize(ref _fragPos, size);
+            Array.Resize(ref _fragVel, size);
+            Array.Resize(ref _fragAcc, size);
+            Array.Resize(ref _fragMass, size);
+            Array.Resize(ref _fragRadius, size);
         }
 
         /// <summary>A black hole absorbing a star or a compact object (not gas or planets) counts as a merger.</summary>

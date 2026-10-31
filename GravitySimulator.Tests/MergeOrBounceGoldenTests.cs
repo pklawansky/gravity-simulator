@@ -45,8 +45,7 @@ public class MergeOrBounceGoldenTests(ITestOutputHelper output)
         return (h, s);
     }
 
-    // GOLDEN-SETUP
-    private static void SetLegacyModel(SimulationParameters p) { }
+    private static void SetLegacyModel(SimulationParameters p) => p.CollisionModel = CollisionModel.MergeOrBounce;
 
     [Fact]
     public void Disc_MergeOrBounce_MatchesPreOutcomesCode()
