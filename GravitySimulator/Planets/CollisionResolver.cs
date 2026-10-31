@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Numerics;
+using System.Threading.Tasks;
 
 namespace GravitySimulator.Planets
 {
     /// <summary>
-    /// Finds touching pairs with a uniform spatial hash and resolves each one:
+    /// Finds touching pairs with a hierarchical spatial hash (in parallel; see <see cref="FindContacts"/>) and
+    /// resolves each one, in a fixed order:
     /// relative speed below <see cref="MergeThreshold"/> x mutual escape speed merges the pair
     /// (mass, momentum and centre of mass conserved; radius from summed volume); otherwise the pair
     /// bounces along the contact normal with restitution <see cref="Restitution"/> and is pushed
@@ -22,10 +26,6 @@ namespace GravitySimulator.Planets
     /// </summary>
     public sealed class CollisionResolver
     {
-        /// <summary>Bodies larger than this multiple of the mean radius are "oversize" and checked against everyone directly.</summary>
-        private const float OversizeFactor = 4f;
-        private const int MaxOversize = 64;
-
         public float MergeThreshold { get; set; } = 1f;
         public float Restitution { get; set; } = 0.5f;
         /// <summary>Rule for Planet-Planet pairs. The resolver defaults to the original merge-or-bounce.</summary>
@@ -48,14 +48,27 @@ namespace GravitySimulator.Planets
         public int LastFragments { get; private set; }
         /// <summary>Fragments not created this step because the live count was at <see cref="MaxBodies"/> (their mass was folded).</summary>
         public int LastFoldedAtCeiling { get; private set; }
+        /// <summary>Distance tests the broad phase made this step (a measure of its work).</summary>
+        public long LastPairTests { get; private set; }
+        /// <summary>Wall time this step: finding the touching pairs, resolving them, compacting and appending fragments.</summary>
+        public double LastDetectMs { get; private set; }
+        public double LastResolveMs { get; private set; }
+        public double LastCompactMs { get; private set; }
 
         // Reused buffers (grown on demand, never per step in steady state).
         private int[] _cellOf = Array.Empty<int>();
-        private int[] _bucketStart = Array.Empty<int>();
-        private int[] _bucketCount = Array.Empty<int>();
+        private int[] _bucketStart = Array.Empty<int>(); // buckets + 1 entries: bucket b is [start[b], start[b + 1])
         private int[] _sorted = Array.Empty<int>();
-        private readonly int[] _oversize = new int[MaxOversize];
-        private bool[] _isOversize = Array.Empty<bool>();
+        private int[] _level = Array.Empty<int>();
+        private int[] _byLevel = Array.Empty<int>();
+        private readonly int[] _levelCount = new int[MaxLevels], _levelStart = new int[MaxLevels], _levelFill = new int[MaxLevels];
+        private readonly float[] _invCell = new float[MaxLevels], _levelMaxR = new float[MaxLevels];
+        private int _levels, _live;
+        private double _c0;
+        private long[] _pairs = new long[256];
+        private long[][] _chunkPairs = Array.Empty<long[]>();
+        private int[] _chunkPairCount = Array.Empty<int>();
+        private long[] _chunkTests = Array.Empty<long>();
 
         // Outcomes: fragments waiting to be appended after the sweep, and bodies removed by
         // non-merge outcomes (merges are counted in LastMerges). Grown on demand only.
@@ -71,91 +84,29 @@ namespace GravitySimulator.Planets
             LastBounces = 0;
             LastBlackHoleMergers = 0;
             LastPartialAccretions = LastHitAndRuns = LastErosions = LastDisruptions = LastFragments = LastFoldedAtCeiling = 0;
+            LastPairTests = 0;
+            LastDetectMs = LastResolveMs = LastCompactMs = 0;
             _fragCount = _removed = 0;
             int n = ps.Count;
             if (n < 2) return;
             _startCount = n;
             _ceiling = MaxBodies > 0 ? MaxBodies : n;
-            EnsureCapacity(ps.Capacity);
 
-            // Classify oversize bodies (e.g. the star) and size the grid for the rest.
-            double sumR = 0;
-            for (int i = 0; i < n; i++) sumR += ps.Radius[i];
-            float meanR = (float)(sumR / n);
-            float cut = meanR * OversizeFactor;
-            int oversizeCount = 0;
-            float maxR = 0f;
-            for (int i = 0; i < n; i++)
-            {
-                float r = ps.Radius[i];
-                bool big = r > cut && oversizeCount < MaxOversize;
-                _isOversize[i] = big;
-                if (big) _oversize[oversizeCount++] = i;
-                else if (r > maxR) maxR = r;
-            }
-            float cell = MathF.Max(2f * maxR, 1e-6f);
-            float invCell = 1f / cell;
+            long t0 = Stopwatch.GetTimestamp();
+            int pairs = Detect(ps);
+            long t1 = Stopwatch.GetTimestamp();
 
-            // Counting sort of non-oversize bodies into hash buckets.
-            int buckets = _bucketStart.Length;
-            int mask = buckets - 1;
-            Array.Clear(_bucketCount, 0, buckets);
-            for (int i = 0; i < n; i++)
+            // Sequential, in (lower index, higher index) order: resolution mutates bodies and draws random numbers.
+            // TryResolve re-tests each pair against the current state, so a pair that an earlier one moved apart
+            // is skipped; contacts that only arise during the sweep wait for the next step.
+            for (int k = 0; k < pairs; k++)
             {
-                if (_isOversize[i]) { _cellOf[i] = -1; continue; }
-                Vector3 p = ps.Position[i];
-                int h = Hash((int)MathF.Floor(p.X * invCell), (int)MathF.Floor(p.Y * invCell), (int)MathF.Floor(p.Z * invCell)) & mask;
-                _cellOf[i] = h;
-                _bucketCount[h]++;
+                long key = _pairs[k];
+                int i = (int)(key >> 32), j = (int)(key & 0xFFFFFFFF);
+                if (ps.Mass[i] <= 0f || ps.Mass[j] <= 0f) continue;
+                TryResolve(ps, i, j);
             }
-            int run = 0;
-            for (int b = 0; b < buckets; b++)
-            {
-                _bucketStart[b] = run;
-                run += _bucketCount[b];
-                _bucketCount[b] = 0;
-            }
-            for (int i = 0; i < n; i++)
-            {
-                int h = _cellOf[i];
-                if (h < 0) continue;
-                _sorted[_bucketStart[h] + _bucketCount[h]++] = i;
-            }
-
-            // Small-vs-small: own cell (pairs with j > i) plus the 13 "forward" neighbour cells (all j),
-            // so each neighbouring pair of cells is scanned once. Hash collisions can make a pair show
-            // up twice; that is harmless (merged bodies are skipped, separated bodies no longer touch).
-            for (int i = 0; i < n; i++)
-            {
-                if (_isOversize[i] || ps.Mass[i] <= 0f) continue;
-                Vector3 p = ps.Position[i];
-                int cx = (int)MathF.Floor(p.X * invCell), cy = (int)MathF.Floor(p.Y * invCell), cz = (int)MathF.Floor(p.Z * invCell);
-                for (int s = 0; s < 14; s++)
-                {
-                    int h = Hash(cx + Stencil[s * 3], cy + Stencil[s * 3 + 1], cz + Stencil[s * 3 + 2]) & mask;
-                    int start = _bucketStart[h], end = start + _bucketCount[h];
-                    for (int k = start; k < end; k++)
-                    {
-                        int j = _sorted[k];
-                        if (j == i || (s == 0 && j < i) || ps.Mass[j] <= 0f || _isOversize[j]) continue;
-                        TryResolve(ps, i, j);
-                        if (ps.Mass[i] <= 0f) goto nextI;
-                    }
-                }
-            nextI:;
-            }
-
-            // Oversize vs everyone (including other oversize bodies).
-            for (int a = 0; a < oversizeCount; a++)
-            {
-                int i = _oversize[a];
-                for (int j = 0; j < n; j++)
-                {
-                    if (j == i || ps.Mass[i] <= 0f || ps.Mass[j] <= 0f) continue;
-                    if (_isOversize[j] && j < i) continue; // each oversize pair once
-                    TryResolve(ps, i, j);
-                }
-            }
+            long t2 = Stopwatch.GetTimestamp();
 
             if (LastMerges > 0 || _removed > 0) ps.Compact();
             if (ps.Count + _fragCount > ps.Capacity) // grow geometrically, but never past the ceiling
@@ -165,6 +116,223 @@ namespace GravitySimulator.Planets
                 int f = ps.Add(_fragPos[k], _fragVel[k], _fragMass[k], _fragRadius[k]);
                 ps.Acceleration[f] = _fragAcc[k];
             }
+            long t3 = Stopwatch.GetTimestamp();
+            double ms = 1000.0 / Stopwatch.Frequency;
+            LastDetectMs = (t1 - t0) * ms;
+            LastResolveMs = (t2 - t1) * ms;
+            LastCompactMs = (t3 - t2) * ms;
+        }
+
+        /// <summary>
+        /// The touching pairs of the current state (live bodies whose centres are closer than the sum of their
+        /// radii), each as (lower index, higher index), in the order <see cref="Resolve"/> handles them.
+        /// Does not change the state.
+        /// </summary>
+        public List<(int A, int B)> FindContacts(ParticleSystem ps)
+        {
+            int count = ps.Count < 2 ? 0 : Detect(ps);
+            var list = new List<(int, int)>(count);
+            for (int k = 0; k < count; k++) list.Add(((int)(_pairs[k] >> 32), (int)(_pairs[k] & 0xFFFFFFFF)));
+            return list;
+        }
+
+        // ---- broad phase: hierarchical spatial hash -------------------------------------------------
+        //
+        // Level L has cell size c0 * 2^L, with c0 just over twice the smallest radius; each body sits in the lowest
+        // level whose cell is (with a 0.1% margin) at least its diameter. Two bodies of one level can only touch
+        // from neighbouring cells, so each body scans its own cell and the 13 "forward" neighbours there. In every
+        // coarser occupied level it scans the cells within its radius plus that level's largest radius (2 or 3 per
+        // axis), or, for a level holding only a few bodies, the level's whole list. So every touching pair is met,
+        // and the work per body does not depend on how large the largest bodies are (the old single grid was sized
+        // by them). Bodies are scanned in parallel; the pairs are then sorted and de-duplicated (hash collisions
+        // can report a pair twice), so the result does not depend on threading.
+
+        private const int MaxLevels = 48;
+        private const int DirectListMax = 16;
+        private const int ParallelMinBodies = 4096;
+
+        private int Detect(ParticleSystem ps)
+        {
+            int n = ps.Count;
+            EnsureCapacity(ps.Capacity);
+
+            float rMin = float.MaxValue;
+            for (int i = 0; i < n; i++)
+                if (ps.Mass[i] > 0f && ps.Radius[i] < rMin) rMin = ps.Radius[i];
+            if (rMin == float.MaxValue) return 0;
+            _c0 = Math.Max(2.002 * rMin, 1e-6);
+            for (int l = 0; l < MaxLevels; l++) _invCell[l] = (float)(1.0 / (_c0 * Math.Pow(2.0, l)));
+
+            // Level and hash bucket of every live body (independent per body, so in parallel).
+            int[] start = _bucketStart;
+            int buckets = start.Length - 1;
+            int chunks = n < ParallelMinBodies ? 1 : Math.Min(n / 1024, Environment.ProcessorCount * 4);
+            int chunkSize = (n + chunks - 1) / chunks;
+            if (chunks == 1) ClassifyChunk(ps, 0, n);
+            else Parallel.For(0, chunks, c => ClassifyChunk(ps, c * chunkSize, Math.Min(n, (c + 1) * chunkSize)));
+
+            // Counting sorts (index order within a level and within a bucket).
+            Array.Clear(_levelCount, 0, MaxLevels);
+            Array.Clear(_levelMaxR, 0, MaxLevels);
+            Array.Clear(start, 0, start.Length);
+            int top = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int l = _level[i];
+                if (l < 0) continue;
+                _levelCount[l]++;
+                if (ps.Radius[i] > _levelMaxR[l]) _levelMaxR[l] = ps.Radius[i];
+                if (l > top) top = l;
+                start[_cellOf[i] + 1]++;
+            }
+            _levels = top + 1;
+            int run = 0;
+            for (int l = 0; l < _levels; l++)
+            {
+                _levelStart[l] = run;
+                run += _levelCount[l];
+                _levelFill[l] = 0;
+            }
+            _live = run;
+            for (int b = 0; b < buckets; b++) start[b + 1] += start[b]; // start[b] = first slot of bucket b
+            for (int i = 0; i < n; i++)
+            {
+                int l = _level[i];
+                if (l < 0) continue;
+                _byLevel[_levelStart[l] + _levelFill[l]++] = i;
+                _sorted[start[_cellOf[i]]++] = i; // afterwards start[b] = end of bucket b
+            }
+            for (int b = buckets; b > 0; b--) start[b] = start[b - 1];
+            start[0] = 0;
+
+            if (_chunkPairs.Length < chunks)
+            {
+                Array.Resize(ref _chunkPairs, chunks);
+                Array.Resize(ref _chunkPairCount, chunks);
+                Array.Resize(ref _chunkTests, chunks);
+            }
+            int live = _live, scanSize = (live + chunks - 1) / chunks;
+            if (chunks == 1) DetectChunk(ps, 0, 0, live);
+            else Parallel.For(0, chunks, c => DetectChunk(ps, c, c * scanSize, Math.Min(live, (c + 1) * scanSize)));
+
+            int total = 0;
+            long tests = 0;
+            for (int c = 0; c < chunks; c++) { total += _chunkPairCount[c]; tests += _chunkTests[c]; }
+            LastPairTests = tests;
+            if (_pairs.Length < total) _pairs = new long[Math.Max(total, 2 * _pairs.Length)];
+            int at = 0;
+            for (int c = 0; c < chunks; c++)
+            {
+                Array.Copy(_chunkPairs[c], 0, _pairs, at, _chunkPairCount[c]);
+                at += _chunkPairCount[c];
+            }
+            Array.Sort(_pairs, 0, total);
+            int unique = 0;
+            for (int k = 0; k < total; k++)
+                if (unique == 0 || _pairs[k] != _pairs[unique - 1]) _pairs[unique++] = _pairs[k];
+            return unique;
+        }
+
+        private void ClassifyChunk(ParticleSystem ps, int first, int end)
+        {
+            int mask = _bucketStart.Length - 2;
+            for (int i = first; i < end; i++)
+            {
+                if (ps.Mass[i] <= 0f) { _level[i] = -1; continue; }
+                double d = 2.002 * ps.Radius[i], c = _c0; // a 0.1% margin keeps "touching" within one cell despite rounding
+                int l = 0;
+                while (c < d && l < MaxLevels - 1) { c *= 2.0; l++; }
+                _level[i] = l;
+                Vector3 p = ps.Position[i];
+                float inv = _invCell[l];
+                _cellOf[i] = Hash((int)MathF.Floor(p.X * inv), (int)MathF.Floor(p.Y * inv), (int)MathF.Floor(p.Z * inv), l) & mask;
+            }
+        }
+
+        // Scans the live bodies _sorted[first..end) (bucket order, so neighbours share cache lines).
+        private void DetectChunk(ParticleSystem ps, int chunk, int first, int end)
+        {
+            long[] buf = _chunkPairs[chunk] ??= new long[256];
+            int count = 0;
+            long tests = 0;
+            int[] bucket = _bucketStart;
+            int mask = bucket.Length - 2;
+            Vector3[] pos = ps.Position;
+            float[] rad = ps.Radius;
+            for (int q = first; q < end; q++)
+            {
+                int i = _sorted[q];
+                int l = _level[i];
+                Vector3 p = pos[i];
+                float r = rad[i];
+
+                // Own level: own cell (j > i) and the 13 forward neighbours.
+                float inv = _invCell[l];
+                int cx = (int)MathF.Floor(p.X * inv), cy = (int)MathF.Floor(p.Y * inv), cz = (int)MathF.Floor(p.Z * inv);
+                for (int s = 0; s < 14; s++)
+                {
+                    int h = Hash(cx + Stencil[s * 3], cy + Stencil[s * 3 + 1], cz + Stencil[s * 3 + 2], l) & mask;
+                    for (int k = bucket[h], e = bucket[h + 1]; k < e; k++)
+                    {
+                        int j = _sorted[k];
+                        if (j == i || (s == 0 && j < i) || _level[j] != l) continue;
+                        tests++;
+                        if (Touching(p, r, pos[j], rad[j])) Push(ref buf, ref count, i, j);
+                    }
+                }
+
+                // Coarser levels: the cells (at most 3 per axis) within reach of this body, or the whole level when it is small.
+                for (int m = l + 1; m < _levels; m++)
+                {
+                    int lc = _levelCount[m];
+                    if (lc == 0) continue;
+                    if (lc <= DirectListMax)
+                    {
+                        for (int k = _levelStart[m], e = k + lc; k < e; k++)
+                        {
+                            int j = _byLevel[k];
+                            tests++;
+                            if (Touching(p, r, pos[j], rad[j])) Push(ref buf, ref count, i, j);
+                        }
+                        continue;
+                    }
+                    float im = _invCell[m], reach = (r + _levelMaxR[m]) * 1.001f;
+                    int x0 = (int)MathF.Floor((p.X - reach) * im), x1 = (int)MathF.Floor((p.X + reach) * im);
+                    int y0 = (int)MathF.Floor((p.Y - reach) * im), y1 = (int)MathF.Floor((p.Y + reach) * im);
+                    int z0 = (int)MathF.Floor((p.Z - reach) * im), z1 = (int)MathF.Floor((p.Z + reach) * im);
+                    for (int z = z0; z <= z1; z++)
+                    for (int y = y0; y <= y1; y++)
+                    for (int x = x0; x <= x1; x++)
+                    {
+                        int h = Hash(x, y, z, m) & mask;
+                        for (int k = bucket[h], e = bucket[h + 1]; k < e; k++)
+                        {
+                            int j = _sorted[k];
+                            if (_level[j] != m) continue;
+                            tests++;
+                            if (Touching(p, r, pos[j], rad[j])) Push(ref buf, ref count, i, j);
+                        }
+                    }
+                }
+            }
+            _chunkPairs[chunk] = buf;
+            _chunkPairCount[chunk] = count;
+            _chunkTests[chunk] = tests;
+        }
+
+        // The same test TryResolve starts with, so every pair found here is one it resolves.
+        private static bool Touching(Vector3 pi, float ri, Vector3 pj, float rj)
+        {
+            Vector3 d = pj - pi;
+            float rs = ri + rj;
+            return d.LengthSquared() < rs * rs;
+        }
+
+        private static void Push(ref long[] buf, ref int count, int i, int j)
+        {
+            if (count == buf.Length) Array.Resize(ref buf, buf.Length * 2);
+            int a = Math.Min(i, j), b = Math.Max(i, j);
+            buf[count++] = ((long)a << 32) | (uint)b;
         }
 
         private void TryResolve(ParticleSystem ps, int i, int j)
@@ -279,7 +447,7 @@ namespace GravitySimulator.Planets
             float vcmn = (mt * vtn + mp * vpn) / mtot;
             ps.Velocity[t] += nrm * (vcmn - vtn);
             ps.Velocity[p] += nrm * (vcmn - vpn);
-            float overlap = rs * 1.0001f - dist; // a hair of clearance so a duplicate hash hit does not re-collide them
+            float overlap = rs * 1.0001f - dist; // a hair of clearance so rounding does not leave them touching
             if (overlap > 0f)
             {
                 ps.Position[t] -= nrm * (overlap * mp / mtot);
@@ -453,18 +621,18 @@ namespace GravitySimulator.Planets
             return s;
         }
 
-        private static int Hash(int x, int y, int z) => (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+        private static int Hash(int x, int y, int z, int level) => (x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ (level * 1640531527);
 
         private void EnsureCapacity(int capacity)
         {
             if (_cellOf.Length >= capacity) return;
             _cellOf = new int[capacity];
             _sorted = new int[capacity];
-            _isOversize = new bool[capacity];
+            _level = new int[capacity];
+            _byLevel = new int[capacity];
             int buckets = 1;
-            while (buckets < capacity * 2) buckets <<= 1;
-            _bucketStart = new int[buckets];
-            _bucketCount = new int[buckets];
+            while (buckets < capacity) buckets <<= 1;
+            _bucketStart = new int[buckets + 1];
         }
     }
 }
