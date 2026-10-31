@@ -43,8 +43,8 @@ namespace GravitySimulator.Sph
             _density, _force, _gravity, _zeta, _kick, _accrete, _candidates, _inject, _energy, _signatures;
         private readonly Pair _posH, _vel, _acc, _massId;
         private readonly int _rhoP, _extra, _vpred, _xi, _key, _rank, _cellCount, _cellStart, _blockSums,
-            _ctrl, _nodeA, _nodeB, _nodeC, _sinks, _events, _cands, _partials, _sig, _stagePos, _stageMass;
-        private int _nodeCapacity;
+            _ctrl, _sinks, _events, _cands, _partials, _sig, _stagePos, _stageMass;
+        private readonly GpuFlatTree _gpuTree;
         private int _alive;
         private int _nextId;
         private IntPtr _stageFence;
@@ -55,7 +55,6 @@ namespace GravitySimulator.Sph
         private float[] _soft;
         private readonly FlatTree _flat = new FlatTree();
         private float[] _stagePosData, _stageMassData;
-        private float[] _nodeAData = Array.Empty<float>(), _nodeBData = Array.Empty<float>(), _nodeCData = Array.Empty<float>();
         private Vector3[] _sinkAcc = Array.Empty<Vector3>();
         private float[] _sinkPhi = Array.Empty<float>();
         private float[] _sinkData = new float[SinkCapacity * 8];
@@ -112,9 +111,7 @@ namespace GravitySimulator.Sph
             _cellStart = NewBuffer(_scanN * 4);
             _blockSums = NewBuffer(2048 * 4);
             _ctrl = NewBuffer(64);
-            _nodeA = NewBuffer(16);
-            _nodeB = NewBuffer(16);
-            _nodeC = NewBuffer(16);
+            _gpuTree = new GpuFlatTree();
             _sinks = NewBuffer(SinkCapacity * 32);
             _events = NewBuffer(EventCapacity * 32);
             _cands = NewBuffer(CandidateCapacity * 32);
@@ -623,37 +620,10 @@ namespace GravitySimulator.Sph
                     _sinkPhi[k] += phi;
                 }
             }
-            int nodes = _flat.Count;
-            if (_nodeAData.Length < nodes * 4)
-            {
-                int cap = nodes * 4 * 5 / 4 + 64;
-                _nodeAData = new float[cap]; _nodeBData = new float[cap]; _nodeCData = new float[cap];
-            }
-            for (int i = 0; i < nodes; i++)
-            {
-                int k = i * 4;
-                Vector4 a = _flat.ComMass[i], b = _flat.CentreHalf[i];
-                _nodeAData[k] = a.X; _nodeAData[k + 1] = a.Y; _nodeAData[k + 2] = a.Z; _nodeAData[k + 3] = a.W;
-                _nodeBData[k] = b.X; _nodeBData[k + 1] = b.Y; _nodeBData[k + 2] = b.Z; _nodeBData[k + 3] = b.W;
-                _nodeCData[k] = BitConverter.Int32BitsToSingle(_flat.Skip[i]);
-                _nodeCData[k + 1] = BitConverter.Int32BitsToSingle(_flat.Body[i]);
-                _nodeCData[k + 2] = _flat.Soft2[i];
-                _nodeCData[k + 3] = 0f;
-            }
+            _gpuTree.Pack(_flat);
             times.TreeBuild = _cpu.Elapsed.TotalMilliseconds;
             _cpu.Restart();
-            if (nodes > _nodeCapacity)
-            {
-                _nodeCapacity = nodes * 5 / 4 + 64;
-                foreach (int buf in new[] { _nodeA, _nodeB, _nodeC })
-                {
-                    GL.BindBuffer(BufferTarget.ShaderStorageBuffer, buf);
-                    GL.BufferData(BufferTarget.ShaderStorageBuffer, _nodeCapacity * 16, IntPtr.Zero, BufferUsageHint.StreamDraw);
-                }
-            }
-            WriteAt(_nodeA, IntPtr.Zero, _nodeAData, nodes * 4);
-            WriteAt(_nodeB, IntPtr.Zero, _nodeBData, nodes * 4);
-            WriteAt(_nodeC, IntPtr.Zero, _nodeCData, nodes * 4);
+            _gpuTree.Upload();
             times.TreeUpload = _cpu.Elapsed.TotalMilliseconds;
         }
 
@@ -669,7 +639,7 @@ namespace GravitySimulator.Sph
             g.Set("uPwCount", _pwCount);
             g.SetArray4("uPw", _pwData, _pwCount);
             g.SetArray1("uPwRs", _pwRs, _pwCount);
-            Bind(_posH.Front, _rhoP, _acc.Back, _extra, _xi, _nodeA, _nodeB, _nodeC);
+            Bind(_posH.Front, _rhoP, _acc.Back, _extra, _xi, _gpuTree.NodeA, _gpuTree.NodeB, _gpuTree.NodeC);
             g.Dispatch(Count, WG);
             Barrier();
 
@@ -917,9 +887,10 @@ namespace GravitySimulator.Sph
                          _gravity, _zeta, _kick, _accrete, _candidates, _inject, _energy, _signatures })
                 p?.Dispose();
             var buffers = new List<int> { _rhoP, _extra, _vpred, _xi, _key, _rank, _cellCount, _cellStart, _blockSums, _ctrl,
-                _nodeA, _nodeB, _nodeC, _sinks, _events, _cands, _partials, _sig, _stagePos, _stageMass };
+                _sinks, _events, _cands, _partials, _sig, _stagePos, _stageMass };
             foreach (var pr in new[] { _posH, _vel, _acc, _massId }) { buffers.Add(pr.Front); buffers.Add(pr.Back); }
             foreach (int b in buffers) if (b != 0) GL.DeleteBuffer(b);
+            _gpuTree.Dispose();
             GL.DeleteQueries(Q, _queries);
             if (_stageFence != IntPtr.Zero) GL.DeleteSync(_stageFence);
             _stageFence = IntPtr.Zero;
