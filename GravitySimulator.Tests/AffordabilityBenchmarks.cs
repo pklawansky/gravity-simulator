@@ -106,7 +106,8 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
             render = gl != null ? RenderCost(sim) : "render skipped: " + error;
         var s = sim.Stats;
         output.WriteLine($"debris-cloud {count}: live {liveStart}->{s.Count}, step {msStep:F1} ms ({1000.0 / msStep:F1} steps/s), " +
-                         $"gravity {msGravity:F0} ms, collisions {msCollide:F0} ms ({resolver.LastMerges} merges, {resolver.LastFragments} fragments), " +
+                         $"gravity {msGravity:F0} ms, collisions {msCollide:F1} ms (find pairs {resolver.LastDetectMs:F1}, resolve {resolver.LastResolveMs:F1}, " +
+                         $"compact+append {resolver.LastCompactMs:F2}; {resolver.LastPairTests:N0} pair tests, {resolver.LastMerges} merges, {resolver.LastFragments} fragments), " +
                          $"{render}, merges {s.Merges}, fragments {s.FragmentsCreated}");
         Assert.True(msStep > 0);
     }
