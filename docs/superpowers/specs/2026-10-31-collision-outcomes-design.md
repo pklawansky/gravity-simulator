@@ -137,7 +137,7 @@ never the limit (≥ 166 fps even at 400k), so the step rate decides.
 - **Count per event:** n = min(**64**, floor(debris / m_min)). The split stays LS12's power law, largest first:
   m_k ∝ k^(−3/β), β = 2.85. That is the rank-ordered form of the eq. 31 cumulative distribution N(>D) ∝ D^−β:
   the k-th largest body has N(>m_k) = k. It is trimmed so no fragment is below m_min. The count grows with debris
-  mass: about 3 fragments for 10 m_min of debris, about 23 for 100 m_min, and 64 from about 370 m_min. Cost of the
+  mass: 4 fragments for 10 m_min of debris, 23 for 100 m_min, and 64 from about 345 m_min. Cost of the
   cap: a forced shower of 1,000 head-on disruptions, each emitting the full 64 fragments, resolves in 37 ms
   (about 37 µs per event). The cap is therefore not the expensive part. The live count it creates is, and the
   ceiling bounds that.
