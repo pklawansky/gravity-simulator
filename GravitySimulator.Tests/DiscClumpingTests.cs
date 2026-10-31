@@ -20,7 +20,8 @@ public class DiscClumpingTests(ITestOutputHelper output)
         var sim = new PlanetSimulation(new SimulationParameters { CollisionModel = model });
         sim.Load(Presets.DiscAroundStar(50_000, seed: 1, discMassFraction: 0.1f));
         var sw = Stopwatch.StartNew();
-        for (int i = 0; i < 1500; i++) sim.Step();
+        int peak = sim.Particles.Count;
+        for (int i = 0; i < 1500; i++) { sim.Step(); peak = Math.Max(peak, sim.Particles.Count); }
         var s = sim.Stats;
         var ps = sim.Particles;
         int clumps = 0, clumps100 = 0;
@@ -36,7 +37,7 @@ public class DiscClumpingTests(ITestOutputHelper output)
         output.WriteLine($"clumping {model}: {clumps} clumps >=10 grains ({clumps100} >=100), largest {largest:F0} grains, " +
                          $"bodies {s.Count}, merges {s.Merges}, bounces {s.Bounces}, partial accretions {s.PartialAccretions}, " +
                          $"hit-and-runs {s.HitAndRuns}, erosions {s.Erosions}, disruptions {s.Disruptions}, " +
-                         $"fragments {s.FragmentsCreated}, escaped {s.Escaped}, {sw.Elapsed.TotalSeconds:F0} s");
+                         $"fragments {s.FragmentsCreated} (folded at ceiling {s.FragmentsFoldedAtCeiling}), peak live {peak}, escaped {s.Escaped}, {sw.Elapsed.TotalSeconds:F0} s");
         if (model == CollisionModel.Outcomes) Assert.True(clumps >= 50, $"only {clumps} clumps of 10+ grains");
     }
 }
