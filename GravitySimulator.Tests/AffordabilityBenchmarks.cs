@@ -113,6 +113,120 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The debris-cloud state of <see cref="StepAndRenderCost_WarmDiscPlusDebrisCloud"/> (same seeds), on either
+    /// gravity backend, timing 10 steps after 2 warm-up steps with the simulation's own per-phase split
+    /// (<see cref="PlanetSimulation.LastPhaseTimes"/>, averaged). The warmed 50k disc is built once (CPU).
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(50_000, false)]
+    [InlineData(100_000, false)]
+    [InlineData(150_000, false)]
+    [InlineData(200_000, false)]
+    [InlineData(300_000, false)]
+    [InlineData(400_000, false)]
+    [InlineData(50_000, true)]
+    [InlineData(100_000, true)]
+    [InlineData(150_000, true)]
+    [InlineData(200_000, true)]
+    [InlineData(300_000, true)]
+    [InlineData(400_000, true)]
+    [InlineData(500_000, true)]
+    [InlineData(600_000, true)]
+    [InlineData(800_000, true)]
+    [InlineData(1_000_000, true)]
+    public void DebrisCloud_StepCostAndPhaseSplit(int count, bool gpu)
+    {
+        using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 2_000_000 });
+        if (gpu) Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        sim.Load(DebrisCloud(count));
+        for (int i = 0; i < 2; i++) sim.Step();
+        const int steps = 10;
+        int liveStart = sim.Particles.Count;
+        double kd = 0, tree = 0, grav = 0, flat = 0, walk = 0, coll = 0, rest = 0;
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++)
+        {
+            sim.Step();
+            var t = sim.LastPhaseTimes;
+            kd += t.KickDrift; tree += t.TreeBuild; grav += t.Gravity; flat += t.GpuFlatten; walk += t.GpuWalk; coll += t.Collisions; rest += t.Rest;
+        }
+        sw.Stop();
+        Assert.True(!gpu || sim.GpuGravityActive, sim.GravityBackend);
+        double msStep = sw.Elapsed.TotalMilliseconds / steps;
+        var s = sim.Stats;
+        string gpuSplit = gpu ? $" (flatten+pack {flat / steps:F1}, GL upload+walk+readback {walk / steps:F1})" : "";
+        output.WriteLine($"phase-split {(gpu ? "GPU" : "CPU")} {count}: live {liveStart}->{s.Count}, step {msStep:F1} ms ({1000.0 / msStep:F1} steps/s); " +
+                         $"kick+drift {kd / steps:F1}, tree build {tree / steps:F1}, gravity {grav / steps:F1}{gpuSplit}, collisions {coll / steps:F1}, " +
+                         $"rest {rest / steps:F1} ms; fragments {s.FragmentsCreated}; {sim.GravityBackend}");
+        Assert.True(msStep > 0);
+    }
+
+    /// <summary>
+    /// The ceiling check: the debris cloud loaded at <paramref name="ceiling"/> with MaxLiveParticles =
+    /// <paramref name="ceiling"/>, so fragments keep it pinned there; 30 steps timed after 2 warm-up steps.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(150_000, false)]
+    [InlineData(150_000, true)]
+    [InlineData(400_000, true)]
+    [InlineData(450_000, true)]
+    [InlineData(500_000, true)]
+    public void DebrisCloud_HeldAtCeiling(int ceiling, bool gpu)
+    {
+        using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = ceiling });
+        if (gpu) Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        sim.Load(DebrisCloud(ceiling));
+        for (int i = 0; i < 2; i++) sim.Step();
+        const int steps = 30;
+        int liveStart = sim.Particles.Count;
+        double tree = 0, grav = 0, coll = 0;
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++)
+        {
+            sim.Step();
+            var t = sim.LastPhaseTimes;
+            tree += t.TreeBuild; grav += t.Gravity; coll += t.Collisions;
+        }
+        sw.Stop();
+        Assert.True(!gpu || sim.GpuGravityActive, sim.GravityBackend);
+        double msStep = sw.Elapsed.TotalMilliseconds / steps;
+        var s = sim.Stats;
+        output.WriteLine($"held-at-ceiling {(gpu ? "GPU" : "CPU")} {ceiling}: live {liveStart}->{s.Count}, step {msStep:F1} ms ({1000.0 / msStep:F1} steps/s); " +
+                         $"tree build {tree / steps:F1}, gravity {grav / steps:F1}, collisions {coll / steps:F1} ms; fragments {s.FragmentsCreated}, folded {s.FragmentsFoldedAtCeiling}");
+        Assert.True(msStep > 0);
+    }
+
+    private static readonly Lazy<(ParticleSystem State, float GrainMass)> WarmDisc = new(() =>
+    {
+        var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 1_000_000 });
+        sim.Load(Presets.DiscAroundStar(50_000, seed: 1, discMassFraction: 0.1f));
+        for (int i = 0; i < 150; i++) sim.Step();
+        return (sim.Particles.Clone(), sim.Stats.GrainMass);
+    });
+
+    // As in StepAndRenderCost_WarmDiscPlusDebrisCloud: the warmed disc topped up with debris (rng seed 7).
+    private static ParticleSystem DebrisCloud(int count)
+    {
+        var (warm, m0) = WarmDisc.Value;
+        var ps = warm.Clone();
+        ps.EnsureCapacity(count);
+        var rng = new Random(7);
+        float rho = m0 / (4f / 3f * MathF.PI * MathF.Pow(Presets.DustRadius, 3));
+        while (ps.Count < count)
+        {
+            float r = Presets.DiscInner + (float)rng.NextDouble() * (Presets.DiscOuter - Presets.DiscInner);
+            float a = (float)(rng.NextDouble() * Math.PI * 2);
+            float z = (float)(rng.NextDouble() + rng.NextDouble() + rng.NextDouble() - 1.5) * 0.1f; // ~N(0, 0.05)
+            var pos = new System.Numerics.Vector3(r * MathF.Cos(a), r * MathF.Sin(a), z);
+            float vc = MathF.Sqrt(1.05f / r);
+            var vel = new System.Numerics.Vector3(-MathF.Sin(a), MathF.Cos(a), 0f) * vc;
+            float m = m0 * (0.25f + 0.75f * (float)rng.NextDouble());
+            ps.Add(pos, vel, m, MathF.Cbrt(3f * m / (4f * MathF.PI * rho)));
+        }
+        return ps;
+    }
+
+    /// <summary>
     /// Cost of the per-event fragment cap: a forced shower of head-on disruptions (equal bodies, debris far above
     /// 64 minimum fragments) resolved in one sweep, so every event emits the full 64 fragments.
     /// </summary>
