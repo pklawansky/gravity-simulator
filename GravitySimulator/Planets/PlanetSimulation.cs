@@ -24,13 +24,14 @@ namespace GravitySimulator.Planets
         /// Load, if that is larger); at the ceiling, further fragments are folded into the largest fragment or the
         /// remnant. Chosen from measured step cost on a 32-core machine with an RTX 4070 Laptop GPU ("GPU gravity"
         /// amendment, 2026-10-31, of the collision outcomes spec): the largest round count that still sustains about
-        /// 5 steps/s. <see cref="DefaultMaxLiveParticles"/> assumes GPU gravity; the UI uses
+        /// 5 steps/s under both held-at-ceiling loads measured (debris cloud, and the 0.1% disc whose live count stays
+        /// pinned at the ceiling). <see cref="DefaultMaxLiveParticles"/> assumes GPU gravity; the UI uses
         /// <see cref="CpuMaxLiveParticles"/> when gravity falls back to the CPU tree.
         /// </summary>
         public int MaxLiveParticles { get; set; } = DefaultMaxLiveParticles;
-        /// <summary>Ceiling with GPU gravity (about 5.3 steps/s held there).</summary>
-        public const int DefaultMaxLiveParticles = 450_000;
-        /// <summary>Ceiling with CPU gravity (about 4.6-4.9 steps/s held there).</summary>
+        /// <summary>Ceiling with GPU gravity (held there: 5.0 steps/s for the 0.1% disc, 5.7 for the debris cloud).</summary>
+        public const int DefaultMaxLiveParticles = 350_000;
+        /// <summary>Ceiling with CPU gravity (held there: 4.1 steps/s for the 0.1% disc, 4.4-4.9 for the debris cloud).</summary>
         public const int CpuMaxLiveParticles = 150_000;
         /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
         public float MaxStepsPerSecond { get; set; } = 120f;
