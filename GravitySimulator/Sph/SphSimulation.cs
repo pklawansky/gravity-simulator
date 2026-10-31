@@ -26,6 +26,8 @@ namespace GravitySimulator.Sph
         public long Accreted { get; init; }
         public long Supernovae { get; init; }
         public float HeaviestSink { get; init; }
+        /// <summary>Mass black holes have gained since the preset loaded (e.g. tidal-disruption debris swallowed).</summary>
+        public double BlackHoleAccreted { get; init; }
         public SphPhaseTimes Times { get; init; }
         public static readonly SphStats Empty = new SphStats();
     }
@@ -43,6 +45,7 @@ namespace GravitySimulator.Sph
         private StellarEvolution _stellar;
         private SphScenario _scenario;
         private long _lastSupernovae;
+        private double _blackHoleMass0;
         private double _stepSecondsEma;
         private readonly Stopwatch _clock = new Stopwatch();
         private (double K, double T, double W) _energy;
@@ -65,6 +68,7 @@ namespace GravitySimulator.Sph
             _solver = new SphGpuSolver(scenario.Parameters, gas.Count + Math.Max(scenario.Headroom, 0));
             _sinks = new SinkManager(scenario.Parameters) { BlackHoleAccretionRadius = scenario.BlackHoleAccretionRadius };
             _sinks.Reset(CloneSinks(scenario.Sinks));
+            _blackHoleMass0 = BlackHoleMass();
             _stellar = scenario.Stellar != null ? new StellarEvolution(scenario.Stellar) : null;
             _lastSupernovae = 0;
             _stepSecondsEma = 0;
@@ -142,6 +146,14 @@ namespace GravitySimulator.Sph
             _lastSupernovae = sn;
         }
 
+        private double BlackHoleMass()
+        {
+            var ps = _sinks.Sinks;
+            double m = 0;
+            for (int i = 0; i < ps.Count; i++) if (ps.Class[i] == BodyClass.BlackHole) m += ps.Mass[i];
+            return m;
+        }
+
         private void PublishStats()
         {
             var ps = _sinks.Sinks;
@@ -171,6 +183,7 @@ namespace GravitySimulator.Sph
                 Accreted = _sinks.AccretedParticles,
                 Supernovae = _stellar?.Supernovae ?? 0,
                 HeaviestSink = heaviest,
+                BlackHoleAccreted = Math.Max(0.0, BlackHoleMass() - _blackHoleMass0),
                 Times = _solver.Times,
             };
         }

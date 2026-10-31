@@ -356,7 +356,9 @@ namespace GravitySimulator.Sph
             sb.AppendLine($"FPS       {_fps,10:F1}");
             sb.AppendLine($"Δt        {s.Dt,10:G3}");
             sb.AppendLine($"Steps     {s.Steps,10:N0}");
-            if (sc != null && sc.Units == UnitSystem.SolarAu)
+            if (sc != null && sc.Kind == SphPresetKind.TidalDisruption)
+                sb.AppendLine($"Time      {s.SimYears * 3.15576e7 / 60,7:F2} min");
+            else if (sc != null && sc.Units == UnitSystem.SolarAu)
                 sb.AppendLine($"Time      {s.SimYears * 365.25,7:F2} days");
             else
                 sb.AppendLine($"Time      {s.SimYears / 1e6,7:F3} Myr");
@@ -368,6 +370,11 @@ namespace GravitySimulator.Sph
             sb.AppendLine($"Stars formed  {s.StarsFormed,6:N0}");
             sb.AppendLine($"Supernovae    {s.Supernovae,6:N0}");
             sb.AppendLine($"Top sink  {s.HeaviestSink,7:G3} M☉");
+            if (sc != null && sc.Kind == SphPresetKind.TidalDisruption)
+            {
+                sb.AppendLine($"Swallowed {s.Accreted,10:N0} particles");
+                sb.AppendLine($"          {s.BlackHoleAccreted,10:G3} M☉ ({s.BlackHoleAccreted / SphPresets.StarMass,0:P1} of the star)");
+            }
             var t = s.Times;
             sb.AppendLine();
             sb.AppendLine("GPU ms/step");

@@ -61,8 +61,13 @@ namespace GravitySimulator.Sph
         /// <summary>ρ_crit of the collapsing cloud in units of its mean density (stiffening well above ρ_sink).</summary>
         public const float CloudCriticalDensityFactor = 300f;
 
-        // Tidal disruption (M☉, AU).
-        public const float BlackHoleMass = 1e5f, StarMass = 1f, Beta = 1.5f;
+        // Tidal disruption (M☉, R☉): a 0.6 M☉ white dwarf (R = 0.0125 R☉) and a 1000 M☉ black hole.
+        public const float BlackHoleMass = 1e3f, StarMass = 0.6f, StarRadius = 0.0125f, Beta = 5f, Eccentricity = 0.8f, StartTidalRadii = 1.5f;
+        /// <summary>Cap on the TDE time step in stellar dynamical times.</summary>
+        public const float TdeMaxStepPerDynamicalTime = 1f / 40f;
+
+        /// <summary>Units of the tidal disruption: M☉ and R☉ (time unit ~26.5 min), G = 1.</summary>
+        public static readonly UnitSystem SolarRadiusUnits = new UnitSystem("M☉, R☉", 1.0, UnitSystem.SolarRadiusMetres);
 
         public static int DefaultCount(SphPresetKind kind) => kind switch
         {
@@ -74,7 +79,7 @@ namespace GravitySimulator.Sph
         {
             SphPresetKind.CollapsingCloud => "Collapsing cloud (M☉, pc)",
             SphPresetKind.CollidingClouds => "Colliding clouds (M☉, pc)",
-            _ => "Star near a black hole (M☉, AU)",
+            _ => "Star near a black hole (white dwarf; M☉, R☉)",
         };
 
         public static SphScenario Create(SphPresetKind kind, int count, int seed) => kind switch
@@ -215,14 +220,27 @@ namespace GravitySimulator.Sph
         };
 
         /// <summary>
-        /// A 1 M☉, 1 R☉ polytrope (n = 1.5, γ = 5/3; Lane-Emden profile, hydrostatic u) relaxed with
-        /// damping, then launched on a parabolic orbit with pericentre r_t/β (β = 1.5) around a
-        /// 10⁵ M☉ black hole, from three tidal radii.
+        /// A 0.6 M☉, 0.0125 R☉ white dwarf (an n = 1.5, γ = 5/3 polytrope, as non-relativistic degenerate
+        /// matter is; Lane-Emden profile, hydrostatic u) relaxed with damping, then launched from 1.5 tidal
+        /// radii on an eccentric (e = 0.8) orbit with pericentre r_t/β (β = 5) around a 1000 M☉ black
+        /// hole: the white dwarf - intermediate-mass black hole disruption of Rosswog, Ramirez-Ruiz &amp; Hix
+        /// (2009, ApJ 695, 404; they ran β up to 12), on a bound orbit as in the eccentric TDEs of
+        /// Hayasaki, Stone &amp; Loeb (2013, MNRAS 434, 909).
+        /// <para>What changed and why (the previous setup was the Sun, a 10⁵ M☉ hole, β = 1.5, parabolic):
+        /// there r_t ≈ 46 R*, so the star was a dot on screen; the most bound debris came back only after
+        /// ~(M_bh/M*)^½ ≈ 300 stellar dynamical times (days, ~10⁵ steps); and with r_t ≈ 110 r_s and no
+        /// relativistic precession the returning debris never came near the hole's accretion radius.
+        /// Here r_t = 12 R*, so the star is big next to its orbit; the bound orbit (period ≈ 6 stellar
+        /// dynamical times ≈ 18 s, binding energy ~6x the tidal energy spread) brings all the debris back
+        /// within seconds of simulated time; and r_t ≈ 35 r_s, so at β = 5 the pericentre (7 r_s) lies
+        /// just outside the 6 r_s accretion radius and the spread in the debris' angular momentum carries
+        /// part of the returning stream inside it. Headless at 50k particles: pericentre at ~10 s of wall
+        /// time, the hole starts swallowing at ~25 s (~1% of the star by 30 s).</para>
         /// </summary>
         public static SphScenario TidalDisruption(int count, int seed)
         {
-            var units = UnitSystem.SolarAu;
-            float rStar = (float)units.SolarRadius;
+            var units = SolarRadiusUnits;
+            float rStar = StarRadius * (float)units.SolarRadius;
             const float gamma = 5f / 3f;
             var (xi1, table) = LaneEmden(1.5);
             float eta = SphKernel.DefaultEta;
@@ -266,14 +284,15 @@ namespace GravitySimulator.Sph
 
             float rt = rStar * MathF.Cbrt(BlackHoleMass / StarMass);
             float rp = rt / Beta;
-            float r0Orbit = 3f * rt;
-            // Parabolic orbit in the xy plane, pericentre on +x: r = 2 r_p / (1 + cos f).
-            float cosF = 2f * rp / r0Orbit - 1f;
+            float r0Orbit = StartTidalRadii * rt;
+            // Orbit of eccentricity e in the xy plane, pericentre on +x: r = r_p (1 + e) / (1 + e cos f).
+            const float e = Eccentricity;
+            float semiLatus = rp * (1f + e);
+            float cosF = (semiLatus / r0Orbit - 1f) / e;
             float f = -MathF.Acos(Math.Clamp(cosF, -1f, 1f));
             var pos = new Vector3(r0Orbit * MathF.Cos(f), r0Orbit * MathF.Sin(f), 0f);
-            float vp = MathF.Sqrt(2f * BlackHoleMass / rp);
-            float h = rp * vp;                                // specific angular momentum
-            float vr = BlackHoleMass / h * MathF.Sin(f), vt = BlackHoleMass / h * (1f + MathF.Cos(f));
+            float h = MathF.Sqrt(BlackHoleMass * semiLatus);  // specific angular momentum
+            float vr = BlackHoleMass / h * e * MathF.Sin(f), vt = BlackHoleMass / h * (1f + e * MathF.Cos(f));
             var rHat = Vector3.Normalize(pos);
             var tHat = new Vector3(-rHat.Y, rHat.X, 0f);
             var vel = rHat * vr + tHat * vt;
@@ -283,6 +302,8 @@ namespace GravitySimulator.Sph
             sinks.Add(Vector3.Zero, Vector3.Zero, BlackHoleMass, rs, BodyClass.BlackHole);
 
             float hStar = eta * MathF.Cbrt(m / (float)(StarMass / (4.0 / 3.0 * Math.PI * rStar * rStar * rStar)));
+            float tStar = MathF.Sqrt(rStar * rStar * rStar / StarMass); // dynamical time of the star (~2.9 s)
+            float rAcc = 6f * rs;
             var p0 = new SphParameters
             {
                 Eos = EquationOfState.IdealGas,
@@ -291,9 +312,9 @@ namespace GravitySimulator.Sph
                 HMax = 1.5f * hStar, // the 2 h_max grid cost grows with the h contrast
                 SinkDensity = float.PositiveInfinity,
                 SinkRadius = 0f,
-                MinInternalEnergy = 1e-3f,
+                MinInternalEnergy = 5e-6f * StarMass / rStar, // ~10⁻⁵ of the star's central u
                 Theta = 0.6f,
-                MaxTimeStep = 4e-6f, // keeps the debris watchable once the star has spread out
+                MaxTimeStep = TdeMaxStepPerDynamicalTime * tStar, // spread-out debris still resolves the hole's accretion radius
             };
             return new SphScenario
             {
@@ -303,8 +324,8 @@ namespace GravitySimulator.Sph
                 {
                     Units = units,
                     TimeAcceleration = 1f,
-                    AccretionRadius = 0.01f,
-                    CaptureRadius = 0.01f,
+                    AccretionRadius = rAcc,
+                    CaptureRadius = rAcc,
                     StarFormationMass = 1e9f,
                     GasParticleMass = m,
                     GasRadius = hStar,
@@ -312,10 +333,12 @@ namespace GravitySimulator.Sph
                 },
                 Gas = gas,
                 Sinks = sinks,
-                BlackHoleAccretionRadius = 6f * rs,
+                BlackHoleAccretionRadius = rAcc,
                 Units = units,
-                CameraDistance = 2f,
-                ExposureRadius = 0.2f,
+                // Frames the start point (2 r_t), the pericentre and the inner stream: the star is a
+                // few percent of the view across, the returning debris and the hole fill the middle.
+                CameraDistance = 4.5f * rt,
+                ExposureRadius = rt,
                 SupernovaDu = 0f,
                 EjectaU = 0f,
                 RelaxSteps = 30,
