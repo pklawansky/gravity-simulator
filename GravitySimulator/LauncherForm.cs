@@ -2,10 +2,11 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 using GravitySimulator.Planets;
+using GravitySimulator.Sph;
 
 namespace GravitySimulator
 {
-    /// <summary>Startup chooser between the classic simulator and planet formation mode.</summary>
+    /// <summary>Startup chooser between the classic simulator, planet formation and gas dynamics (SPH).</summary>
     public sealed class LauncherForm : Form
     {
         public LauncherForm()
@@ -14,7 +15,7 @@ namespace GravitySimulator
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(420, 210);
+            ClientSize = new Size(420, 275);
 
             var title = new Label
             {
@@ -35,9 +36,16 @@ namespace GravitySimulator
                 Location = new Point(20, 125),
                 Size = new Size(380, 50),
             };
+            var gas = new Button
+            {
+                Text = "Gas dynamics (SPH)",
+                Location = new Point(20, 190),
+                Size = new Size(380, 50),
+            };
             classic.Click += (s, e) => Open(() => new Form1());
             planets.Click += (s, e) => Open(() => new PlanetForm());
-            Controls.AddRange(new Control[] { title, classic, planets });
+            gas.Click += (s, e) => Open(() => new SphForm());
+            Controls.AddRange(new Control[] { title, classic, planets, gas });
         }
 
         private void Open(Func<Form> create)

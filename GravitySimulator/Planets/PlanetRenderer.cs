@@ -17,7 +17,7 @@ namespace GravitySimulator.Planets
     /// </summary>
     public sealed class PlanetRenderer : IDisposable
     {
-        private const string VertexSource = @"#version 330 core
+        internal const string VertexSource = @"#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in float aRadius;
 layout(location = 2) in float aMass;
@@ -89,7 +89,7 @@ void main()
     vStar = star;
 }";
 
-        private const string FragmentSource = @"#version 330 core
+        internal const string FragmentSource = @"#version 330 core
 in vec3 vColor;
 in float vStar;
 flat in int vKind;
