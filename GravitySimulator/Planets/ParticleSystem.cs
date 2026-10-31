@@ -14,6 +14,10 @@ namespace GravitySimulator.Planets
         public Vector3[] Acceleration;
         public float[] Mass;
         public float[] Radius;
+        /// <summary>Stellar-model class (Planet, the zero default, when the stellar model is off).</summary>
+        public BodyClass[] Class;
+        /// <summary>Stellar age in simulation time units (already scaled by the stellar time acceleration).</summary>
+        public float[] Age;
 
         public int Count { get; private set; }
         public int Capacity => Position.Length;
@@ -26,9 +30,11 @@ namespace GravitySimulator.Planets
             Acceleration = new Vector3[capacity];
             Mass = new float[capacity];
             Radius = new float[capacity];
+            Class = new BodyClass[capacity];
+            Age = new float[capacity];
         }
 
-        public int Add(Vector3 position, Vector3 velocity, float mass, float radius)
+        public int Add(Vector3 position, Vector3 velocity, float mass, float radius, BodyClass bodyClass = BodyClass.Planet, float age = 0f)
         {
             if (Count == Capacity) Grow(Capacity * 2);
             int i = Count++;
@@ -37,7 +43,15 @@ namespace GravitySimulator.Planets
             Acceleration[i] = Vector3.Zero;
             Mass[i] = mass;
             Radius[i] = radius;
+            Class[i] = bodyClass;
+            Age[i] = age;
             return i;
+        }
+
+        /// <summary>Grows the arrays (if needed) so at least <paramref name="capacity"/> entries fit without reallocating.</summary>
+        public void EnsureCapacity(int capacity)
+        {
+            if (capacity > Capacity) Grow(capacity);
         }
 
         /// <summary>Removes entry <paramref name="index"/> by moving the last entry into its slot.</summary>
@@ -52,6 +66,8 @@ namespace GravitySimulator.Planets
                 Acceleration[index] = Acceleration[last];
                 Mass[index] = Mass[last];
                 Radius[index] = Radius[last];
+                Class[index] = Class[last];
+                Age[index] = Age[last];
             }
         }
 
@@ -72,12 +88,14 @@ namespace GravitySimulator.Planets
 
         public ParticleSystem Clone()
         {
-            var copy = new ParticleSystem(Count);
+            var copy = new ParticleSystem(Capacity);
             Array.Copy(Position, copy.Position, Count);
             Array.Copy(Velocity, copy.Velocity, Count);
             Array.Copy(Acceleration, copy.Acceleration, Count);
             Array.Copy(Mass, copy.Mass, Count);
             Array.Copy(Radius, copy.Radius, Count);
+            Array.Copy(Class, copy.Class, Count);
+            Array.Copy(Age, copy.Age, Count);
             copy.Count = Count;
             return copy;
         }
@@ -89,6 +107,8 @@ namespace GravitySimulator.Planets
             Array.Resize(ref Acceleration, capacity);
             Array.Resize(ref Mass, capacity);
             Array.Resize(ref Radius, capacity);
+            Array.Resize(ref Class, capacity);
+            Array.Resize(ref Age, capacity);
         }
     }
 }

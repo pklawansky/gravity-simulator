@@ -8,7 +8,9 @@ namespace GravitySimulator.Planets
     /// relative speed below <see cref="MergeThreshold"/> x mutual escape speed merges the pair
     /// (mass, momentum and centre of mass conserved; radius from summed volume); otherwise the pair
     /// bounces along the contact normal with restitution <see cref="Restitution"/> and is pushed
-    /// apart so it no longer overlaps. G = 1.
+    /// apart so it no longer overlaps. G = 1. A black hole never bounces: it always absorbs what
+    /// touches it. Merged bodies take the class/age given by <see cref="StellarPhysics.MergeClass"/>
+    /// (all bodies are Planet when the stellar model is off, so nothing changes there).
     /// </summary>
     public sealed class CollisionResolver
     {
@@ -21,6 +23,8 @@ namespace GravitySimulator.Planets
 
         public int LastMerges { get; private set; }
         public int LastBounces { get; private set; }
+        /// <summary>Merges this step where a black hole absorbed a star or another compact object.</summary>
+        public int LastBlackHoleMergers { get; private set; }
 
         // Reused buffers (grown on demand, never per step in steady state).
         private int[] _cellOf = Array.Empty<int>();
@@ -35,6 +39,7 @@ namespace GravitySimulator.Planets
         {
             LastMerges = 0;
             LastBounces = 0;
+            LastBlackHoleMergers = 0;
             int n = ps.Count;
             if (n < 2) return;
             EnsureCapacity(ps.Capacity);
@@ -132,7 +137,8 @@ namespace GravitySimulator.Planets
             Vector3 vRel = ps.Velocity[j] - ps.Velocity[i];
             float vEsc = MathF.Sqrt(2f * mt / rs);
 
-            if (vRel.Length() < MergeThreshold * vEsc)
+            BodyClass ci = ps.Class[i], cj = ps.Class[j];
+            if (vRel.Length() < MergeThreshold * vEsc || ci == BodyClass.BlackHole || cj == BodyClass.BlackHole)
             {
                 // Merge into the heavier body's slot; the other is marked dead (mass 0).
                 int keep = m1 >= m2 ? i : j, gone = keep == i ? j : i;
@@ -141,6 +147,10 @@ namespace GravitySimulator.Planets
                 ps.Velocity[keep] = (ps.Velocity[i] * m1 + ps.Velocity[j] * m2) / mt;
                 ps.Acceleration[keep] = (ps.Acceleration[i] * m1 + ps.Acceleration[j] * m2) / mt;
                 ps.Radius[keep] = MathF.Cbrt(rk * rk * rk + rg * rg * rg);
+                var (cls, age) = StellarPhysics.MergeClass(ci, ps.Age[i], m1, cj, ps.Age[j], m2);
+                if (cls == BodyClass.BlackHole && IsBlackHoleMerger(ci, cj)) LastBlackHoleMergers++;
+                ps.Class[keep] = cls;
+                ps.Age[keep] = age;
                 ps.Mass[keep] = mt;
                 ps.Mass[gone] = 0f;
                 LastMerges++;
@@ -161,6 +171,13 @@ namespace GravitySimulator.Planets
             ps.Position[i] -= nrm * (overlap * m2 / mt);
             ps.Position[j] += nrm * (overlap * m1 / mt);
             LastBounces++;
+        }
+
+        /// <summary>A black hole absorbing a star or a compact object (not gas or planets) counts as a merger.</summary>
+        public static bool IsBlackHoleMerger(BodyClass a, BodyClass b)
+        {
+            BodyClass other = a == BodyClass.BlackHole ? b : b == BodyClass.BlackHole ? a : BodyClass.Planet;
+            return other >= BodyClass.Star;
         }
 
         // Own cell first, then the 13 neighbours with (dz, dy, dx) lexicographically after (0, 0, 0).
