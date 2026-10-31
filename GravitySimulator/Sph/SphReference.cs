@@ -380,7 +380,8 @@ namespace GravitySimulator.Sph
 
         /// <summary>
         /// Particles denser than ρ_sink, converging (∇·v &lt; 0) and bound within r_e = min(r_sink, 2 h_max):
-        /// E_th ≤ |E_grav|/2 and E_kin + E_th + E_grav &lt; 0, with E_grav ≈ -3/5 M²/r_e.
+        /// E_th ≤ |E_grav|/2 and E_kin + E_th + E_grav &lt; 0, with E_grav ≈ -3/5 M²/r_e and E_kin relative to
+        /// the centre of mass without inward radial motion.
         /// Uses the density pass's results.
         /// </summary>
         public void FindSinkCandidates(SphState s, List<SinkCandidate> result)
@@ -411,10 +412,21 @@ namespace GravitySimulator.Sph
                 float mj = s.Mass[j];
                 m += mj;
                 mv += mj * s.Velocity[j];
-                mv2 += mj * s.Velocity[j].LengthSquared();
                 eth += mj * s.U[j];
             }
-            double ekin = 0.5 * (mv2 - mv.LengthSquared() / m);
+            // Kinetic energy relative to the clump's centre of mass, without the inward radial part
+            // (infall drives the collapse instead of resisting it).
+            Vector3 vcom = mv / (float)m;
+            foreach (int j in near)
+            {
+                Vector3 d = s.Position[j] - xi;
+                if (d.LengthSquared() >= re2) continue;
+                Vector3 v = s.Velocity[j] - vcom;
+                float r = d.Length();
+                float vr = r > 0f ? Vector3.Dot(v, d) / r : 0f;
+                mv2 += s.Mass[j] * (v.LengthSquared() - (vr < 0f ? vr * vr : 0f));
+            }
+            double ekin = 0.5 * mv2;
             double egrav = -0.6 * m * m / re;
             return eth <= 0.5 * -egrav && ekin + eth + egrav < 0;
         }

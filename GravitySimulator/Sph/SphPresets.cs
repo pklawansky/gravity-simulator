@@ -51,14 +51,16 @@ namespace GravitySimulator.Sph
         public const float CloudVirialRatio = 0.8f;
 
         // Colliding clouds (M☉, pc).
-        public const float CollideMass = 600f, CollideRadius = 0.6f, CollideSpeed = 12f, CollideSoundSpeed = 3f;
+        public const float CollideMass = 300f, CollideRadius = 0.6f, CollideSpeed = 25f, CollideSoundSpeed = 5f;
+        /// <summary>ρ_crit of the collapsing cloud in units of its mean density (stiffening well above ρ_sink).</summary>
+        public const float CloudCriticalDensityFactor = 300f;
 
         // Tidal disruption (M☉, AU).
         public const float BlackHoleMass = 1e5f, StarMass = 1f, Beta = 1.5f;
 
         public static int DefaultCount(SphPresetKind kind) => kind switch
         {
-            SphPresetKind.TidalDisruption => 100_000,
+            SphPresetKind.TidalDisruption => 50_000,
             _ => 200_000,
         };
 
@@ -101,7 +103,7 @@ namespace GravitySimulator.Sph
             {
                 Eos = EquationOfState.Barotropic,
                 SoundSpeed = CloudSoundSpeed,
-                CriticalDensity = 40f * rhoMean,
+                CriticalDensity = CloudCriticalDensityFactor * rhoMean,
                 HMin = hMean / 4f,
                 HMax = 1.5f * hMean,
                 SinkDensity = rhoSink,
@@ -125,8 +127,9 @@ namespace GravitySimulator.Sph
         }
 
         /// <summary>
-        /// Two turbulent clouds (600 M☉, 0.6 pc each) approaching head-on at 2 x 0.8 km/s along x,
-        /// ideal gas γ = 5/3 at c_s = 0.2 km/s; the shocked layer is heated, then fragments under gravity.
+        /// Two turbulent clouds (300 M☉, 0.6 pc each, slightly off-axis) approaching head-on at
+        /// 2 x 1.6 km/s along x, ideal gas γ = 5/3 at c_s = 0.33 km/s; the shocked layer is heated, then
+        /// fragments under gravity.
         /// </summary>
         public static SphScenario CollidingClouds(int count, int seed)
         {
@@ -139,7 +142,7 @@ namespace GravitySimulator.Sph
             float hMean = eta * MathF.Cbrt(m / rhoMean);
             float u = CollideSoundSpeed * CollideSoundSpeed / (gamma * (gamma - 1f));
             var gas = new SphState(count + Headroom(count));
-            float offset = 1.15f * CollideRadius * 1.6f;
+            float offset = CollideRadius + 0.15f;   // 0.3 pc gap: they meet well inside a free-fall time
             for (int c = 0; c < 2; c++)
             {
                 int start = gas.Count;
@@ -272,7 +275,7 @@ namespace GravitySimulator.Sph
                 Eos = EquationOfState.IdealGas,
                 Gamma = gamma,
                 HMin = hStar / 6f,
-                HMax = 3f * hStar,
+                HMax = 1.5f * hStar, // the 2 h_max grid cost grows with the h contrast
                 SinkDensity = float.PositiveInfinity,
                 SinkRadius = 0f,
                 MinInternalEnergy = 1e-3f,
@@ -300,7 +303,7 @@ namespace GravitySimulator.Sph
                 CameraDistance = 1.6f,
                 SupernovaDu = 0f,
                 EjectaU = 0f,
-                RelaxSteps = 60,
+                RelaxSteps = 30,
                 LaunchOffset = pos,
                 LaunchVelocity = vel,
                 Headroom = 1024,

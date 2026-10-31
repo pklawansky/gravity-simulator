@@ -1,5 +1,6 @@
 // Sink candidates: denser than rho_sink, converging (div v < 0), and bound within
-// r_e = min(r_sink, 2 h_max): E_th <= |E_grav|/2 and E_kin + E_th + E_grav < 0, E_grav = -3/5 M^2/r_e.
+// r_e = min(r_sink, 2 h_max): E_th <= |E_grav|/2 and E_kin + E_th + E_grav < 0, E_grav = -3/5 M^2/r_e,
+// E_kin relative to the centre of mass without inward radial motion.
 // Mirrors SphReference.FindSinkCandidates.
 layout(local_size_x = 128) in;
 struct Candidate { vec4 posRho; vec4 index; };  // xyz, rho; x = index (int bits)
@@ -46,11 +47,35 @@ void main()
             float u = uIdeal == 1 ? v.w : 1.5 * rhoP[j].y / rhoP[j].x;
             m += mj;
             mv += mj * v.xyz;
-            mv2 += mj * dot(v.xyz, v.xyz);
             eth += mj * u;
         }
     }
-    float ekin = 0.5 * (mv2 - dot(mv, mv) / m);
+    // Kinetic energy relative to the centre of mass, without the inward radial part (infall drives
+    // the collapse instead of resisting it): a second pass over the same particles.
+    vec3 vcom = mv / m;
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = cc + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            vec3 xj = posH[j].xyz;
+            if (cellOf(xj, cell) != c) continue;
+            vec3 d = xj - xi;
+            float d2 = dot(d, d);
+            if (d2 >= re2) continue;
+            float mj = massId[j].x;
+            if (mj <= 0.0) continue;
+            vec3 v = vel[j].xyz - vcom;
+            float r = sqrt(d2);
+            float vr = r > 0.0 ? dot(v, d) / r : 0.0;
+            mv2 += mj * (dot(v, v) - (vr < 0.0 ? vr * vr : 0.0));
+        }
+    }
+    float ekin = 0.5 * mv2;
     float egrav = -0.6 * m * m / re;
     if (!(eth <= -0.5 * egrav && ekin + eth + egrav < 0.0)) return;
     uint slot = atomicAdd(ctrl[2], 1u);

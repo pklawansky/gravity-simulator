@@ -18,7 +18,7 @@ public class SphPerfBenchmarks(ITestOutputHelper output)
     [InlineData(SphPresetKind.CollapsingCloud, 200_000)]
     [InlineData(SphPresetKind.CollapsingCloud, 400_000)]
     [InlineData(SphPresetKind.CollidingClouds, 200_000)]
-    [InlineData(SphPresetKind.TidalDisruption, 100_000)]
+    [InlineData(SphPresetKind.TidalDisruption, 50_000)]
     public void Preset_StepsPerSecond(SphPresetKind kind, int count)
     {
         using var gl = HeadlessGlContext.TryCreate(out string error);

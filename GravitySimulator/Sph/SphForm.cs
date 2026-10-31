@@ -109,7 +109,7 @@ namespace GravitySimulator.Sph
 
             _soundSpeed = new NumericUpDown { Minimum = 0.1m, Maximum = 50m, Increment = 0.5m, DecimalPlaces = 2, Value = 2m, Width = 230 };
             _soundSpeed.ValueChanged += (s, e) => ApplyParameters();
-            _rhoCrit = new NumericUpDown { Minimum = 1m, Maximum = 10000m, Increment = 5m, DecimalPlaces = 0, Value = 40m, Width = 230 };
+            _rhoCrit = new NumericUpDown { Minimum = 1m, Maximum = 10000m, Increment = 25m, DecimalPlaces = 0, Value = (decimal)SphPresets.CloudCriticalDensityFactor, Width = 230 };
             _rhoCrit.ValueChanged += (s, e) => ApplyParameters();
             _gamma = new NumericUpDown { Minimum = 1.01m, Maximum = 2m, Increment = 0.05m, DecimalPlaces = 3, Value = 1.667m, Width = 230 };
             _gamma.ValueChanged += (s, e) => ApplyParameters();
@@ -246,7 +246,7 @@ namespace GravitySimulator.Sph
             _rhoCritCaption.Visible = _rhoCrit.Visible = baro;
             _gammaCaption.Visible = _gamma.Visible = !baro;
             _soundSpeed.Value = (decimal)SphPresets.CloudSoundSpeed;
-            _rhoCrit.Value = 40m;
+            _rhoCrit.Value = (decimal)SphPresets.CloudCriticalDensityFactor;
             _gamma.Value = 1.667m;
         }
 
