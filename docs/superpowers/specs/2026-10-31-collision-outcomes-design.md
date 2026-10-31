@@ -190,10 +190,11 @@ models stay deterministic per seed.
 
 Other options considered:
 
-- **Sort-and-sweep:** rejected. In a thin disc, one axis's intervals overlap about as many bodies as the old grid's
-  cells did.
-- **Querying the Barnes-Hut octree:** rejected. It needs per-node radius bounds and pointer-chasing traversal, which
-  is slower than hashing.
+- **Sort-and-sweep:** rejected, measured. On the 100k debris-cloud state, the best axis (x or y) yields 25.7M
+  candidate pairs, as many as the old grid's 25.5M tests (z yields 675M). The hierarchical hash makes 1.0M tests on
+  the same state.
+- **Querying the Barnes-Hut octree:** rejected on analysis, not measured. Its nodes carry no radius bounds, and
+  walking the tree means pointer-chasing per body, which should be slower than a hash lookup.
 
 `CollisionBroadPhaseTests` checks the new broad phase against an O(n²) search. On random mixed-size states (more
 than 64 large bodies, a star-sized body, dead bodies) it finds exactly the same contact set.
