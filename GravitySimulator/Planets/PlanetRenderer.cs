@@ -10,7 +10,10 @@ namespace GravitySimulator.Planets
     /// <summary>
     /// OpenGL 3.3 core renderer: particle snapshots streamed into VBOs each frame and drawn as
     /// perspective-sized round point sprites, coloured by mass (dust dim, rock warm, planets bright,
-    /// star emissive). All methods must be called with the GL context current (UI thread).
+    /// star emissive). With the stellar model on, bodies are coloured by class instead: gas dim violet,
+    /// stars by mass (red, yellow, blue-white), white dwarfs small white, neutron stars small cyan,
+    /// black holes a black disc (the event horizon at a minimum on-screen size) with an orange ring,
+    /// and supernova flashes. All methods must be called with the GL context current (UI thread).
     /// </summary>
     public sealed class PlanetRenderer : IDisposable
     {
@@ -18,18 +21,60 @@ namespace GravitySimulator.Planets
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in float aRadius;
 layout(location = 2) in float aMass;
+layout(location = 3) in float aClass;
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform float uPointScale;   // viewport height * proj[1][1]
 uniform float uGrainMass;
 uniform float uStarMass;     // bodies at or above this mass are drawn as the star
+uniform int uStellar;        // 1 = colour by stellar class
 out vec3 vColor;
 out float vStar;
+flat out int vKind;          // 0 normal, 1 star glow, 2 black hole, 3 flash, 4 gas
 void main()
 {
     vec4 vp = uView * vec4(aPos, 1.0);
     gl_Position = uProj * vp;
     float depth = max(-vp.z, 1e-3);
+    float px = aRadius * uPointScale / depth;
+    if (uStellar == 1)
+    {
+        int k = int(aClass + 0.5);
+        vKind = 0;
+        vStar = 0.0;
+        if (k == 1) {            // gas
+            vColor = vec3(0.32, 0.30, 0.62);
+            gl_PointSize = clamp(px, 1.5, 48.0);
+            vKind = 4;
+        } else if (k == 2) {     // star: red -> yellow -> blue-white by mass
+            float lm = log(max(aMass, 0.01)) / log(10.0);     // log10 M
+            vec3 red = vec3(1.0, 0.28, 0.12), yellow = vec3(1.0, 0.78, 0.30), blue = vec3(0.50, 0.68, 1.0);
+            float t = clamp((lm + 1.0) / 1.0, 0.0, 1.0);        // 0.1 -> 1 M_sun
+            float u = clamp(lm / 1.3, 0.0, 1.0);                // 1 -> 20 M_sun
+            vColor = lm < 0.0 ? mix(red, yellow, t) : mix(yellow, blue, u);
+            gl_PointSize = 2.5 + 7.0 * clamp((lm + 1.1) / 2.6, 0.0, 1.0);
+            vKind = 1;
+        } else if (k == 3) {     // white dwarf
+            vColor = vec3(1.0, 1.0, 1.0);
+            gl_PointSize = 3.0;
+        } else if (k == 4) {     // neutron star
+            vColor = vec3(0.35, 1.0, 1.0);
+            gl_PointSize = 3.5;
+        } else if (k == 5) {     // black hole: event horizon at a minimum on-screen size, plus ring
+            vColor = vec3(1.0, 0.45, 0.10);
+            gl_PointSize = clamp(px * 3.0, 18.0, 96.0);
+            vKind = 2;
+        } else if (k == 6) {     // supernova flash; radius carries brightness 0..1
+            vColor = vec3(1.0, 0.95, 0.80) * (0.4 + 0.8 * aRadius);
+            gl_PointSize = 40.0 + 120.0 * aRadius;
+            vKind = 3;
+        } else {                 // planet / brown dwarf
+            vColor = vec3(0.75, 0.52, 0.35);
+            gl_PointSize = clamp(px, 2.0, 48.0);
+        }
+        return;
+    }
+    vKind = 0;
     float star = (uStarMass > 0.0 && aMass >= uStarMass) ? 1.0 : 0.0;
     float grains = max(aMass / max(uGrainMass, 1e-30), 1.0);
     float t = clamp(log(grains) / log(500.0), 0.0, 1.0);     // 1 grain -> 0, 500 grains -> 1
@@ -47,20 +92,46 @@ void main()
         private const string FragmentSource = @"#version 330 core
 in vec3 vColor;
 in float vStar;
+flat in int vKind;
+uniform int uPass;           // 0 additive glow, 1 alpha-blended black-hole cores
 out vec4 fragColor;
 void main()
 {
     vec2 d = gl_PointCoord * 2.0 - 1.0;
     float r2 = dot(d, d);
     if (r2 > 1.0) discard;
+    if (uPass == 1)
+    {
+        if (vKind != 2 || r2 > 0.30) discard;
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    if (vKind == 2)
+    {
+        float ring = smoothstep(0.25, 0.45, r2) * (1.0 - smoothstep(0.55, 1.0, r2));
+        fragColor = vec4(vColor * 1.6, ring);
+        return;
+    }
+    if (vKind == 3)
+    {
+        float glow = exp(-4.0 * r2);
+        fragColor = vec4(vColor, glow);
+        return;
+    }
+    if (vKind == 4)
+    {
+        fragColor = vec4(vColor, (1.0 - smoothstep(0.2, 1.0, r2)) * 0.5);
+        return;
+    }
     float edge = 1.0 - smoothstep(0.6, 1.0, r2);
     float glow = vStar > 0.5 ? 1.4 : 1.0;
     fragColor = vec4(vColor * glow, edge * (vStar > 0.5 ? 1.0 : 0.85));
 }";
 
-        private int _program, _vao, _vboPos, _vboRad, _vboMass;
-        private int _uView, _uProj, _uPointScale, _uGrainMass, _uStarMass;
-        private int _count;
+        private int _program, _vao, _vboPos, _vboRad, _vboMass, _vboClass;
+        private int _uView, _uProj, _uPointScale, _uGrainMass, _uStarMass, _uStellar, _uPass;
+        private int _count, _drawCount;
+        private bool _stellar;
         private long _uploadedVersion = -1;
         private float _grainMass = 1f, _starMass;
         private readonly float[] _mat = new float[16];
@@ -76,12 +147,15 @@ void main()
             _uPointScale = GL.GetUniformLocation(_program, "uPointScale");
             _uGrainMass = GL.GetUniformLocation(_program, "uGrainMass");
             _uStarMass = GL.GetUniformLocation(_program, "uStarMass");
+            _uStellar = GL.GetUniformLocation(_program, "uStellar");
+            _uPass = GL.GetUniformLocation(_program, "uPass");
 
             _vao = GL.GenVertexArray();
             GL.BindVertexArray(_vao);
             _vboPos = MakeAttribute(0, 3);
             _vboRad = MakeAttribute(1, 1);
             _vboMass = MakeAttribute(2, 1);
+            _vboClass = MakeAttribute(3, 1);
             GL.BindVertexArray(0);
 
             GL.Enable(EnableCap.ProgramPointSize);
@@ -106,11 +180,14 @@ void main()
         {
             if (snap == null || snap.Version == _uploadedVersion) return;
             _count = snap.Count;
+            _stellar = snap.Stats.StellarModel;
+            _drawCount = _stellar ? _count + snap.FlashCount : _count;
             _grainMass = snap.Stats.GrainMass > 0f ? snap.Stats.GrainMass : 1f;
             _starMass = snap.Stats.StarMass;
-            Stream(_vboPos, snap.Positions, _count * 3);
-            Stream(_vboRad, snap.Radii, _count);
-            Stream(_vboMass, snap.Masses, _count);
+            Stream(_vboPos, snap.Positions, _drawCount * 3);
+            Stream(_vboRad, snap.Radii, _drawCount);
+            Stream(_vboMass, snap.Masses, _drawCount);
+            Stream(_vboClass, snap.Classes, _drawCount);
             _uploadedVersion = snap.Version;
         }
 
@@ -126,7 +203,7 @@ void main()
         {
             GL.Viewport(0, 0, Math.Max(1, width), Math.Max(1, height));
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-            if (_count == 0) return;
+            if (_drawCount == 0) return;
 
             Matrix4x4 proj = camera.Projection(width / (float)Math.Max(1, height));
             GL.UseProgram(_program);
@@ -135,8 +212,18 @@ void main()
             GL.Uniform1(_uPointScale, height * proj.M22);
             GL.Uniform1(_uGrainMass, _grainMass);
             GL.Uniform1(_uStarMass, _starMass);
+            GL.Uniform1(_uStellar, _stellar ? 1 : 0);
+            GL.Uniform1(_uPass, 0);
             GL.BindVertexArray(_vao);
-            GL.DrawArrays(PrimitiveType.Points, 0, _count);
+            GL.DrawArrays(PrimitiveType.Points, 0, _drawCount);
+            if (_stellar)
+            {
+                // Black-hole cores drawn opaque black over the additive glow.
+                GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                GL.Uniform1(_uPass, 1);
+                GL.DrawArrays(PrimitiveType.Points, 0, _count);
+                GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+            }
             GL.BindVertexArray(0);
         }
 
@@ -208,6 +295,7 @@ void main()
             GL.DeleteBuffer(_vboPos);
             GL.DeleteBuffer(_vboRad);
             GL.DeleteBuffer(_vboMass);
+            GL.DeleteBuffer(_vboClass);
             GL.DeleteVertexArray(_vao);
             GL.DeleteProgram(_program);
             _program = 0;

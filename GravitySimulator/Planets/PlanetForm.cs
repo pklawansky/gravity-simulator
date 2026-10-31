@@ -29,8 +29,8 @@ namespace GravitySimulator.Planets
 
         private ComboBox _preset;
         private NumericUpDown _count, _mergeK, _restitution;
-        private TrackBar _timeSpeed, _discMass;
-        private Label _timeSpeedLabel, _discMassLabel, _readout;
+        private TrackBar _timeSpeed, _discMass, _stellarAccel;
+        private Label _timeSpeedLabel, _discMassLabel, _readout, _stellarAccelLabel, _discMassCaption, _stellarAccelCaption;
         private Button _start, _pause, _reset, _screenshot;
 
         private Point _lastMouse;
@@ -42,6 +42,14 @@ namespace GravitySimulator.Planets
         // Disc-mass slider stops, as a fraction of the star's mass.
         private static readonly float[] DiscMassSteps = { 0.001f, 0.005f, 0.01f, 0.02f, 0.05f, 0.10f, 0.20f, 0.30f };
         private const int DefaultDiscMassStep = 5;
+
+        // Stellar time acceleration slider stops (cosmic presets).
+        private static readonly float[] StellarAccelSteps = { 1f, 2f, 3f, 5f, 10f, 20f, 50f, 100f, 200f };
+
+        private static readonly PresetKind[] PresetOrder =
+            { PresetKind.DiscAroundStar, PresetKind.SpinningCloud, PresetKind.StarFormingCloud, PresetKind.DenseStarCluster };
+
+        private PresetKind SelectedPreset => PresetOrder[Math.Max(0, _preset.SelectedIndex)];
 
         public PlanetForm()
         {
@@ -90,10 +98,10 @@ namespace GravitySimulator.Planets
             };
 
             _preset = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
-            _preset.Items.AddRange(new object[] { "Disc around a star", "Spinning cloud" });
+            _preset.Items.AddRange(new object[] { "Disc around a star", "Spinning cloud", "Star-forming cloud (M\u2609, pc)", "Dense star cluster (M\u2609, pc)" });
             _preset.SelectedIndex = 0;
 
-            _count = new NumericUpDown { Minimum = 10_000, Maximum = 100_000, Increment = 10_000, Value = 50_000, Width = 220, ThousandsSeparator = true };
+            _count = new NumericUpDown { Minimum = 1_000, Maximum = 100_000, Increment = 10_000, Value = 50_000, Width = 220, ThousandsSeparator = true };
 
             _timeSpeed = new TrackBar { Minimum = -4, Maximum = 4, Value = 0, TickFrequency = 1, Width = 220 };
             _timeSpeedLabel = new Label { AutoSize = true };
@@ -103,6 +111,10 @@ namespace GravitySimulator.Planets
             _discMassLabel = new Label { AutoSize = true };
             _discMass.ValueChanged += (s, e) => UpdateDiscMassLabel();
             UpdateDiscMassLabel();
+
+            _stellarAccel = new TrackBar { Minimum = 0, Maximum = StellarAccelSteps.Length - 1, Value = 2, TickFrequency = 1, Width = 220 };
+            _stellarAccelLabel = new Label { AutoSize = true };
+            _stellarAccel.ValueChanged += (s, e) => ApplyParameters();
 
             _mergeK = new NumericUpDown { Minimum = 0.1m, Maximum = 10m, Increment = 0.1m, DecimalPlaces = 1, Value = 1.0m, Width = 220 };
             _mergeK.ValueChanged += (s, e) => ApplyParameters();
@@ -130,11 +142,16 @@ namespace GravitySimulator.Planets
 
             _readout = new Label { AutoSize = true, Font = new Font(FontFamily.GenericMonospace, 8.5f), Margin = new Padding(3, 12, 3, 3) };
 
+            _discMassCaption = Caption("Disc mass, % of star (applies on Reset)");
+            _stellarAccelCaption = Caption("Stellar time acceleration");
+            _preset.SelectedIndexChanged += (s, e) => ApplyPresetDefaults();
+
             panel.Controls.AddRange(new Control[]
             {
                 Caption("Preset (applies on Reset)"), _preset,
                 Caption("Particles (applies on Reset)"), _count,
-                Caption("Disc mass, % of star (applies on Reset)"), _discMass, _discMassLabel,
+                _discMassCaption, _discMass, _discMassLabel,
+                _stellarAccelCaption, _stellarAccel, _stellarAccelLabel,
                 Caption("Time speed"), _timeSpeed, _timeSpeedLabel,
                 Caption("Merge threshold k (x escape speed)"), _mergeK,
                 Caption("Restitution e (bounces)"), _restitution,
@@ -168,6 +185,7 @@ namespace GravitySimulator.Planets
                 return;
             }
 
+            ApplyPresetDefaults();
             ApplyParameters();
             ResetSimulation();
             _frameTimer.Start();
@@ -177,9 +195,17 @@ namespace GravitySimulator.Planets
         {
             bool wasRunning = _sim.IsRunning;
             _sim.Pause();
-            var kind = _preset.SelectedIndex == 1 ? PresetKind.SpinningCloud : PresetKind.DiscAroundStar;
+            var kind = SelectedPreset;
+            Presets.Configure(kind, _sim.Parameters);
+            ApplyParameters();
             _sim.Load(Presets.Create(kind, (int)_count.Value, Environment.TickCount, DiscMassSteps[_discMass.Value]));
-            _camera.Distance = kind == PresetKind.DiscAroundStar ? 5f : 4f;
+            _camera.Distance = kind switch
+            {
+                PresetKind.DiscAroundStar => 5f,
+                PresetKind.StarFormingCloud => 7f,
+                PresetKind.DenseStarCluster => 2.5f,
+                _ => 4f,
+            };
             if (wasRunning) _sim.Start();
             _gl.Invalidate();
         }
@@ -192,6 +218,29 @@ namespace GravitySimulator.Planets
             p.TimeScale = speed;
             p.MergeThreshold = (float)_mergeK.Value;
             p.Restitution = (float)_restitution.Value;
+            float accel = StellarAccelSteps[_stellarAccel.Value];
+            _stellarAccelLabel.Text = accel.ToString("0.##", CultureInfo.InvariantCulture) + "x";
+            if (p.Stellar != null) p.Stellar.TimeAcceleration = accel;
+        }
+
+        // When the preset selection changes: per-preset particle count, merge/bounce defaults, and
+        // which preset-specific sliders are shown.
+        private void ApplyPresetDefaults()
+        {
+            var kind = SelectedPreset;
+            bool cosmic = Presets.IsCosmic(kind);
+            _count.Increment = cosmic ? 1_000 : 10_000;
+            _count.Value = Math.Clamp(Presets.DefaultCount(kind), (int)_count.Minimum, (int)_count.Maximum);
+            _mergeK.Value = (decimal)Presets.DefaultMergeThreshold(kind);
+            _restitution.Value = (decimal)Presets.DefaultRestitution(kind);
+            if (cosmic)
+            {
+                int step = Array.IndexOf(StellarAccelSteps, Presets.DefaultTimeAcceleration(kind));
+                _stellarAccel.Value = step >= 0 ? step : 2;
+            }
+            bool disc = kind == PresetKind.DiscAroundStar;
+            _discMassCaption.Visible = _discMass.Visible = _discMassLabel.Visible = disc;
+            _stellarAccelCaption.Visible = _stellarAccel.Visible = _stellarAccelLabel.Visible = cosmic;
         }
 
         private void UpdateDiscMassLabel() =>
@@ -261,12 +310,33 @@ namespace GravitySimulator.Planets
             sb.AppendLine($"Bounces   {s.Bounces,10:N0}");
             sb.AppendLine($"Escaped   {s.Escaped,10:N0}");
             sb.AppendLine();
-            sb.AppendLine("Largest bodies (grains):");
-            float grain = s.GrainMass > 0f ? s.GrainMass : 1f;
-            if (s.StarMass > 0f) sb.AppendLine($"  star  {s.StarMass / grain,12:N0}");
-            int rank = 1;
-            foreach (float m in s.LargestMasses.Take(5))
-                sb.AppendLine($"  #{rank++}    {m / grain,12:N0}");
+            if (s.StellarModel && s.ClassCounts.Length >= 6)
+            {
+                var c = s.ClassCounts;
+                sb.AppendLine($"Time      {s.SimYears / 1e6,7:F2} Myr");
+                sb.AppendLine($"Gas       {c[(int)BodyClass.Gas],10:N0}");
+                sb.AppendLine($"Planets   {c[(int)BodyClass.Planet],10:N0}");
+                sb.AppendLine($"Stars     {c[(int)BodyClass.Star],10:N0}");
+                sb.AppendLine($"W. dwarfs {c[(int)BodyClass.WhiteDwarf],10:N0}");
+                sb.AppendLine($"N. stars  {c[(int)BodyClass.NeutronStar],10:N0}");
+                sb.AppendLine($"B. holes  {c[(int)BodyClass.BlackHole],10:N0}");
+                sb.AppendLine();
+                sb.AppendLine($"Stars formed  {s.StarsFormed,6:N0}");
+                sb.AppendLine($"Supernovae    {s.Supernovae,6:N0}");
+                sb.AppendLine($"BHs formed    {s.BlackHolesFormed,6:N0}");
+                sb.AppendLine($"BH mergers    {s.BlackHoleMergers,6:N0}");
+                sb.AppendLine($"Top star  {s.HeaviestStar,7:F1} M\u2609");
+                if (s.HeaviestBlackHole > 0f) sb.AppendLine($"Top BH    {s.HeaviestBlackHole,7:F1} M\u2609");
+            }
+            else
+            {
+                sb.AppendLine("Largest bodies (grains):");
+                float grain = s.GrainMass > 0f ? s.GrainMass : 1f;
+                if (s.StarMass > 0f) sb.AppendLine($"  star  {s.StarMass / grain,12:N0}");
+                int rank = 1;
+                foreach (float m in s.LargestMasses.Take(5))
+                    sb.AppendLine($"  #{rank++}    {m / grain,12:N0}");
+            }
             if (_lastScreenshot != null)
             {
                 sb.AppendLine();
