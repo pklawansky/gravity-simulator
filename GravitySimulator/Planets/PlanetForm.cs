@@ -333,6 +333,7 @@ namespace GravitySimulator.Planets
                 sb.AppendLine($"Erosions  {s.Erosions,10:N0}");
                 sb.AppendLine($"Disrupted {s.Disruptions,10:N0}");
                 sb.AppendLine($"Fragments {s.FragmentsCreated,10:N0}");
+                if (s.FragmentsFoldedAtCeiling > 0) sb.AppendLine($"Folded    {s.FragmentsFoldedAtCeiling,10:N0}"); // at the live-count ceiling
             }
             sb.AppendLine();
             if (s.StellarModel && s.ClassCounts.Length >= 6)
