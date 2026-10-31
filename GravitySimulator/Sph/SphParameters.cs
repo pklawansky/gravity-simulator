@@ -63,6 +63,12 @@ namespace GravitySimulator.Sph
         /// <summary>Accretion radius of gas-formed sinks; also the radius a new sink gathers its gas from.</summary>
         public float SinkRadius { get; set; } = 0f;
 
+        /// <summary>
+        /// Black-hole sinks pull the gas with the Paczyński-Wiita potential Φ = -GM/(r - r_s) (sink radius =
+        /// r_s) instead of through the softened tree: pseudo-Newtonian, with apsidal precession.
+        /// </summary>
+        public bool PseudoNewtonianBlackHoles { get; set; }
+
         /// <summary>CPU reference only: periodic box lengths per axis (0 = open). The GPU solver is open.</summary>
         public Vector3 Period { get; set; } = Vector3.Zero;
 

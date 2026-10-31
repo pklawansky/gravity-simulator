@@ -13,6 +13,10 @@ layout(std430, binding = 7) readonly buffer NodeC { vec4 links[]; };     // skip
 uniform uint uNodeCount;
 uniform float uTheta2;
 uniform float uHMin, uHMax;
+// Paczynski-Wiita black holes (not in the tree): xyz + mass, and r_s. Mirrors SphReference.PaczynskiWiitaAcceleration.
+uniform int uPwCount;
+uniform vec4 uPw[8];
+uniform float uPwRs[8];
 void main()
 {
     uint i = gl_GlobalInvocationID.x;
@@ -57,6 +61,15 @@ void main()
             n = skip;
         }
         else n++;
+    }
+    for (int k = 0; k < uPwCount; k++)
+    {
+        vec3 d = uPw[k].xyz - p;
+        float r = length(d);
+        if (!(r > 0.0)) continue;
+        float x = max(r - uPwRs[k], 1e-3 * uPwRs[k]);
+        acc += d * (uPw[k].w / (x * x * r));
+        phi -= uPw[k].w / x;
     }
     accOut[i].xyz += acc;
     extra[i].w = phi;

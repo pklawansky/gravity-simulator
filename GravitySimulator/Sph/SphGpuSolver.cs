@@ -548,11 +548,13 @@ namespace GravitySimulator.Sph
             var sp = sinks?.Sinks;
             int s = sp?.Count ?? 0;
             if (_sinkAcc.Length < s) { _sinkAcc = new Vector3[Math.Max(s, 16)]; _sinkPhi = new float[Math.Max(s, 16)]; }
+            _pwCount = 0;
             if (!_p.SelfGravity)
             {
                 for (int k = 0; k < s; k++) { _sinkAcc[k] = Vector3.Zero; _sinkPhi[k] = 0f; }
                 return;
             }
+            if (_sinkSoft.Length < s) { _sinkSoft = new float[Math.Max(s, 16)]; _sinkPw = new bool[Math.Max(s, 16)]; }
             int n = Count;
             _cpu.Restart();
             if (_stageFence != IntPtr.Zero)
@@ -588,14 +590,32 @@ namespace GravitySimulator.Sph
             }
             for (int k = 0; k < s; k++)
             {
+                _sinkSoft[k] = sinks.AccretionRadius(k);
+                // Paczyński-Wiita black holes act on the gas directly (gravity.comp), not through the tree.
+                _sinkPw[k] = _p.PseudoNewtonianBlackHoles && sp.Class[k] == BodyClass.BlackHole && _pwCount < MaxPw;
+                if (_sinkPw[k])
+                {
+                    int o = _pwCount * 4;
+                    _pwData[o] = sp.Position[k].X; _pwData[o + 1] = sp.Position[k].Y; _pwData[o + 2] = sp.Position[k].Z; _pwData[o + 3] = sp.Mass[k];
+                    _pwRs[_pwCount++] = sp.Radius[k];
+                    continue;
+                }
+                _soft[ps.Count] = _sinkSoft[k];
                 ps.Add(sp.Position[k], Vector3.Zero, sp.Mass[k], 0f);
-                _soft[n + k] = sinks.AccretionRadius(k);
             }
             _tree.Theta = _p.Theta;
             _tree.Build(ps);
             _tree.Flatten(_flat, _soft);
             for (int k = 0; k < s; k++)
-                _sinkAcc[k] = _flat.Acceleration(sp.Position[k], _soft[n + k], _p.Theta, out _sinkPhi[k]);
+            {
+                _sinkAcc[k] = _flat.Acceleration(sp.Position[k], _sinkSoft[k], _p.Theta, out _sinkPhi[k]);
+                for (int j = 0; j < s; j++)
+                {
+                    if (j == k || !_sinkPw[j]) continue;
+                    _sinkAcc[k] += SphReference.PaczynskiWiitaAcceleration(sp.Position[j] - sp.Position[k], sp.Mass[j], sp.Radius[j], out float phi);
+                    _sinkPhi[k] += phi;
+                }
+            }
             int nodes = _flat.Count;
             if (_nodeAData.Length < nodes * 4)
             {
@@ -639,6 +659,9 @@ namespace GravitySimulator.Sph
             g.Set("uTheta2", _p.Theta * _p.Theta);
             g.Set("uHMin", _p.HMin);
             g.Set("uHMax", _p.HMax);
+            g.Set("uPwCount", _pwCount);
+            g.SetArray4("uPw", _pwData, _pwCount);
+            g.SetArray1("uPwRs", _pwRs, _pwCount);
             Bind(_posH.Front, _rhoP, _acc.Back, _extra, _xi, _nodeA, _nodeB, _nodeC);
             g.Dispatch(Count, WG);
             Barrier();
@@ -683,6 +706,8 @@ namespace GravitySimulator.Sph
                     {
                         Vector3 x = sp.Position[k], v = sp.Velocity[k];
                         _sinkData[o] = x.X; _sinkData[o + 1] = x.Y; _sinkData[o + 2] = x.Z; _sinkData[o + 3] = sinks.AccretionRadius(k);
+                        // Negative radius: absorbing inner boundary (Paczyński-Wiita hole), no boundness test.
+                        if (_p.PseudoNewtonianBlackHoles && sp.Class[k] == BodyClass.BlackHole) _sinkData[o + 3] = -_sinkData[o + 3];
                         _sinkData[o + 4] = v.X; _sinkData[o + 5] = v.Y; _sinkData[o + 6] = v.Z; _sinkData[o + 7] = sp.Mass[k];
                     }
                     else
@@ -720,6 +745,13 @@ namespace GravitySimulator.Sph
         }
 
         private int _lastSinkTotal, _lastExisting;
+
+        // Paczyński-Wiita black holes of the current step (uniforms of gravity.comp).
+        private const int MaxPw = 8;
+        private int _pwCount;
+        private readonly float[] _pwData = new float[MaxPw * 4], _pwRs = new float[MaxPw];
+        private float[] _sinkSoft = new float[16];
+        private bool[] _sinkPw = new bool[16];
 
         private void ApplySinkResults(SinkManager sinks)
         {

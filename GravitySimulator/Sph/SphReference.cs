@@ -242,6 +242,22 @@ namespace GravitySimulator.Sph
             AddSofteningCorrection(s);
         }
 
+        /// <summary>
+        /// Paczyński &amp; Wiita (1980) pseudo-Newtonian black hole: Φ = -GM/(r - r_s), a = -GM r̂/(r - r_s)².
+        /// <paramref name="toHole"/> = x_hole - x. Newtonian for r ≫ r_s, stronger close in, and it makes
+        /// orbits precess (2π r_s/p per orbit to leading order, 2/3 of Schwarzschild's 3π r_s/p). r - r_s
+        /// is floored at 10⁻³ r_s (gas never gets that deep: the accretion radius is several r_s).
+        /// Mirrored in gravity.comp.
+        /// </summary>
+        public static Vector3 PaczynskiWiitaAcceleration(Vector3 toHole, float mass, float rs, out float potential)
+        {
+            float r = toHole.Length();
+            if (!(r > 0f)) { potential = 0f; return Vector3.Zero; }
+            float x = MathF.Max(r - rs, 1e-3f * rs);
+            potential = -mass / x;
+            return toHole * (mass / (x * x * r));
+        }
+
         /// <summary>ξ = -h² S / (6ρ); zero when h sits on a clamp (dh/dρ = 0 there).</summary>
         internal static float Xi(float h, float rho, float softSum, SphParameters p)
         {
@@ -508,6 +524,8 @@ namespace GravitySimulator.Sph
                         float d2 = d.LengthSquared();
                         if (d2 >= racc * racc) continue;
                         float e = 0.5f * (ps.Velocity[k] - vi).LengthSquared() - (ms + mi) / MathF.Max(MathF.Sqrt(d2), 1e-12f);
+                        // Paczyński-Wiita hole: an absorbing inner boundary, no boundness test (as accrete.comp).
+                        if (_p.PseudoNewtonianBlackHoles && ps.Class[k] == BodyClass.BlackHole) e = -3e38f;
                         if (e < bestE) { bestE = e; best = k; }
                     }
                 }

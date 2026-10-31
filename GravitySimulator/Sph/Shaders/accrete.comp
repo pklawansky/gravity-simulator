@@ -41,6 +41,7 @@ void main()
             if (d2 >= s.posR.w * s.posR.w) continue;
             vec3 dv = s.velM.xyz - vi;
             float e = 0.5 * dot(dv, dv) - (ms + mi) / max(sqrt(d2), 1e-12);
+            if (s.posR.w < 0.0) e = -3.0e38;          // absorbing inner boundary (Paczynski-Wiita hole)
             if (e < bestE) { bestE = e; best = int(k); }
         }
     }

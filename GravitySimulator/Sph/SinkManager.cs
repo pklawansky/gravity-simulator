@@ -61,6 +61,19 @@ namespace GravitySimulator.Sph
         /// </summary>
         public double BlackHoleAccretedMass { get; private set; }
 
+        /// <summary>
+        /// Black holes book accreted gas in double precision (mass, centre of mass, momentum), so even
+        /// particles far below the float resolution of the hole's mass make it grow and move, with total
+        /// mass and momentum conserved. Off: the float update used by every other sink (unchanged).
+        /// </summary>
+        public bool PreciseBlackHoleAccretion { get; set; }
+        private double[] _bhMass = Array.Empty<double>();
+        private float[] _bhMassWritten = Array.Empty<float>();
+
+        /// <summary>Double-precision mass of sink <paramref name="k"/> as booked by <see cref="PreciseBlackHoleAccretion"/> (its float mass otherwise).</summary>
+        public double BlackHoleMassExact(int k) =>
+            k < _bhMass.Length && Sinks.Mass[k] == _bhMassWritten[k] ? _bhMass[k] : Sinks.Mass[k];
+
         public void Reset(ParticleSystem sinks)
         {
             Sinks = sinks ?? new ParticleSystem(64);
@@ -106,6 +119,45 @@ namespace GravitySimulator.Sph
         /// <see cref="Forming"/>), creates the new sinks from the gas they gathered, and clears
         /// <see cref="Forming"/>. Returns the number of sinks created.
         /// </summary>
+        // This step's gas absorbed by each black hole, summed in double: mass, Σ m x, Σ m v.
+        private double[] _accM = Array.Empty<double>();
+        private double[] _accMx = Array.Empty<double>(), _accMv = Array.Empty<double>();
+
+        private void AccreteExact(int k, AccretionEvent ev)
+        {
+            if (_accM.Length < Sinks.Count)
+            {
+                Array.Resize(ref _accM, Sinks.Capacity);
+                Array.Resize(ref _accMx, Sinks.Capacity * 3);
+                Array.Resize(ref _accMv, Sinks.Capacity * 3);
+            }
+            double m = ev.Mass;
+            _accM[k] += m;
+            _accMx[3 * k] += m * ev.Position.X; _accMx[3 * k + 1] += m * ev.Position.Y; _accMx[3 * k + 2] += m * ev.Position.Z;
+            _accMv[3 * k] += m * ev.Velocity.X; _accMv[3 * k + 1] += m * ev.Velocity.Y; _accMv[3 * k + 2] += m * ev.Velocity.Z;
+        }
+
+        // Centre of mass and momentum of hole + gas in double, written once per step; M kept in double
+        // (resynchronised from the float mass when something else changed it: index shuffle, stellar model).
+        private void FlushExact(int existing)
+        {
+            var ps = Sinks;
+            if (_bhMass.Length < ps.Count) { Array.Resize(ref _bhMass, ps.Capacity); Array.Resize(ref _bhMassWritten, ps.Capacity); }
+            for (int k = 0; k < existing && k < _accM.Length; k++)
+            {
+                double dm = _accM[k];
+                if (dm <= 0) continue;
+                double mass = BlackHoleMassExact(k), total = mass + dm;
+                Vector3 x = ps.Position[k], v = ps.Velocity[k];
+                ps.Position[k] = new Vector3((float)((mass * x.X + _accMx[3 * k]) / total), (float)((mass * x.Y + _accMx[3 * k + 1]) / total), (float)((mass * x.Z + _accMx[3 * k + 2]) / total));
+                ps.Velocity[k] = new Vector3((float)((mass * v.X + _accMv[3 * k]) / total), (float)((mass * v.Y + _accMv[3 * k + 1]) / total), (float)((mass * v.Z + _accMv[3 * k + 2]) / total));
+                _bhMass[k] = total;
+                ps.Mass[k] = _bhMassWritten[k] = (float)total;
+                _accM[k] = 0;
+                for (int a = 0; a < 3; a++) { _accMx[3 * k + a] = 0; _accMv[3 * k + a] = 0; }
+            }
+        }
+
         public int Apply(IReadOnlyList<AccretionEvent> events)
         {
             int existing = Sinks.Count, forming = Forming.Count;
@@ -127,6 +179,12 @@ namespace GravitySimulator.Sph
                 {
                     int k = ev.Sink;
                     if (ps.Class[k] == BodyClass.BlackHole) BlackHoleAccretedMass += ev.Mass;
+                    if (PreciseBlackHoleAccretion && ps.Class[k] == BodyClass.BlackHole)
+                    {
+                        AccreteExact(k, ev);
+                        AccretedParticles++;
+                        continue;
+                    }
                     float ms = ps.Mass[k], mt = ms + ev.Mass;
                     ps.Position[k] = (ps.Position[k] * ms + ev.Position * ev.Mass) / mt;
                     ps.Velocity[k] = (ps.Velocity[k] * ms + ev.Velocity * ev.Mass) / mt;
@@ -142,6 +200,8 @@ namespace GravitySimulator.Sph
                 else continue;
                 AccretedParticles++;
             }
+
+            if (PreciseBlackHoleAccretion) FlushExact(existing);
 
             int created = 0;
             for (int f = 0; f < forming; f++)
