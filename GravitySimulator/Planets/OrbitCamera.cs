@@ -21,6 +21,8 @@ namespace GravitySimulator.Planets
         /// so the camera can zoom in to objects far smaller than 0.01 world units.
         /// </summary>
         public bool DynamicClip { get; set; }
+        /// <summary>Point the camera orbits and looks at (the origin unless something moves it, e.g. a follow camera).</summary>
+        public Vector3 Target { get; set; }
 
         public Vector3 Eye
         {
@@ -44,7 +46,7 @@ namespace GravitySimulator.Planets
             Distance = Math.Clamp(Distance * MathF.Pow(0.9f, notches), MinDistance, MaxDistance);
         }
 
-        public Matrix4x4 View => Matrix4x4.CreateLookAt(Eye, Vector3.Zero, Vector3.UnitZ);
+        public Matrix4x4 View => Matrix4x4.CreateLookAt(Target + Eye, Target, Vector3.UnitZ);
 
         public Matrix4x4 Projection(float aspect) =>
             Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, MathF.Max(aspect, 1e-3f),

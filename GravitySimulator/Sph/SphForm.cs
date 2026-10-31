@@ -26,6 +26,10 @@ namespace GravitySimulator.Sph
 
         private GLControl _gl;
         private bool _glReady, _running, _screenshotRequested;
+        private CheckBox _follow;
+        private float _followZoom = 1f;                // mouse-wheel multiplier on the follow distance
+        private FollowFraming.Frame _followFrame, _followLastTarget;
+        private readonly Stopwatch _followClock = Stopwatch.StartNew();
         private string _gpuName = "", _lastScreenshot, _error;
 
         private ComboBox _preset, _colorMode;
@@ -68,7 +72,7 @@ namespace GravitySimulator.Sph
             _gl.MouseDown += (s, e) => { _dragging = e.Button == MouseButtons.Left; _lastMouse = e.Location; };
             _gl.MouseUp += (s, e) => _dragging = false;
             _gl.MouseMove += OnGlMouseMove;
-            _gl.MouseWheel += (s, e) => _camera.Zoom(e.Delta / 120f);
+            _gl.MouseWheel += (s, e) => OnWheel(e.Delta / 120f);
 
             Controls.Add(_gl);
             Controls.Add(BuildSidePanel());
@@ -101,6 +105,11 @@ namespace GravitySimulator.Sph
             _timeSpeed = new TrackBar { Minimum = -4, Maximum = 2, Value = 0, TickFrequency = 1, Width = 230 };
             _timeSpeedLabel = new Label { AutoSize = true };
             _timeSpeed.ValueChanged += (s, e) => ApplyParameters();
+
+            // Follow camera: drives the view centre and distance (rotation stays manual; the wheel scales
+            // the automatic distance instead of turning follow off).
+            _follow = new CheckBox { Text = "Follow camera", AutoSize = true, Margin = new Padding(3, 10, 3, 2) };
+            _follow.CheckedChanged += (s, e) => { _followZoom = 1f; _followFrame = _followLastTarget = new FollowFraming.Frame(_camera.Target, _camera.Distance); _followClock.Restart(); };
 
             _colorMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
             _colorMode.Items.AddRange(new object[] { "Temperature", "Density" });
@@ -147,6 +156,7 @@ namespace GravitySimulator.Sph
                 Caption("Particles (applies on Reset)"), _count,
                 Caption("Time speed (Courant factor)"), _timeSpeed, _timeSpeedLabel,
                 Caption("Colour"), _colorMode,
+                _follow,
                 _soundSpeedCaption, _soundSpeed,
                 _rhoCritCaption, _rhoCrit,
                 _gammaCaption, _gamma,
@@ -218,6 +228,11 @@ namespace GravitySimulator.Sph
                 // Zoom in to 1% of the framing distance: in the TDE a black hole then fills the view.
                 _camera.MinDistance = 0.01f * scenario.CameraDistance;
                 _camera.Distance = scenario.CameraDistance;
+                _camera.MaxDistance = MathF.Max(200f, 50f * scenario.CameraDistance);
+                _camera.Target = System.Numerics.Vector3.Zero;
+                _follow.Checked = scenario.FollowCamera;
+                _followZoom = 1f;
+                if (_follow.Checked && FollowTarget() is FollowFraming.Frame f0) ApplyFollow(_followFrame = _followLastTarget = f0); // start framed
                 if (scenario.CameraYaw is float yaw) _camera.Yaw = yaw;
                 if (scenario.CameraPitch is float pitch) _camera.Pitch = pitch;
                 ApplyParameters();
@@ -307,10 +322,50 @@ namespace GravitySimulator.Sph
             _gl.Invalidate();
         }
 
+        private void OnWheel(float notches)
+        {
+            if (_follow.Checked) _followZoom = Math.Clamp(_followZoom * MathF.Pow(0.9f, notches), 0.02f, 50f);
+            else _camera.Zoom(notches);
+            _gl.Invalidate();
+        }
+
+        // Framing target from the positions the solver already read back for the tree (no extra read-back).
+        private FollowFraming.Frame? FollowTarget()
+        {
+            var solver = _sim.Solver;
+            var sc = _sim.Scenario;
+            if (solver == null || sc == null || solver.StagedCount == 0) return null;
+            System.Numerics.Vector3? hole = null;
+            var ps = _sim.SinkManager?.Sinks;
+            if (ps != null)
+                for (int i = 0; i < ps.Count; i++)
+                    if (ps.Class[i] == BodyClass.BlackHole) { hole = ps.Position[i]; break; }
+            var settings = new FollowFraming.Settings { MinHalfView = sc.FollowMinHalfView, HoleMargin = sc.FollowHoleMargin, FieldOfView = _camera.FieldOfView };
+            var f = FollowFraming.Compute(solver.StagedPositions, solver.StagedCount, hole, settings);
+            return f with { Distance = f.Distance * _followZoom };
+        }
+
+        private void UpdateFollow()
+        {
+            float dt = (float)_followClock.Elapsed.TotalSeconds;
+            _followClock.Restart();
+            if (!_follow.Checked || FollowTarget() is not FollowFraming.Frame target) return;
+            _followFrame = FollowFraming.Track(_followFrame, _followLastTarget, target, MathF.Min(dt, 0.25f));
+            _followLastTarget = target;
+            ApplyFollow(_followFrame);
+        }
+
+        private void ApplyFollow(FollowFraming.Frame f)
+        {
+            _camera.Target = f.Centre;
+            _camera.Distance = Math.Clamp(f.Distance, _camera.MinDistance, _camera.MaxDistance);
+        }
+
         private void RenderFrame()
         {
             if (!_glReady) return;
             _gl.MakeCurrent();
+            UpdateFollow();
             var st = _sim.Stats;
             var units = _sim.Scenario?.Units;
             _renderer.Overlay = units == null ? null :

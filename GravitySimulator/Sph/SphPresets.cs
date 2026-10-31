@@ -32,6 +32,10 @@ namespace GravitySimulator.Sph
         /// <summary>Camera yaw and pitch set on load (radians), or null to keep the current view direction.</summary>
         public float? CameraYaw { get; init; }
         public float? CameraPitch { get; init; }
+        /// <summary>The follow camera is on by default (see <see cref="FollowFraming"/>); smallest half-view it frames.</summary>
+        public bool FollowCamera { get; init; }
+        public float FollowMinHalfView { get; init; } = 1f;
+        public float FollowHoleMargin { get; init; }
         /// <summary>Radius whose mean column density sets the exposure (0 = from the initial gas).</summary>
         public float ExposureRadius { get; init; }
         /// <summary>Δu given to gas at the centre of a supernova blast (falls off linearly to the blast radius).</summary>
@@ -372,6 +376,11 @@ namespace GravitySimulator.Sph
                 CameraYaw = -MathF.PI / 2f - 0.66f, // the long axis of the orbit along the screen diagonal
                 CameraPitch = 1.45f,                // nearly face-on to the orbit plane
                 ExposureRadius = 3f * rt,           // bright enough that the thinning stream stays visible
+                // Follow camera: a 7 R☉ half-view early on (the Sun ~14% of the view across), widening to
+                // keep the hole, the core and the stream in view.
+                FollowCamera = true,
+                FollowMinHalfView = 7f * rStar,
+                FollowHoleMargin = 3f * rs,
                 SupernovaDu = 0f,
                 EjectaU = 0f,
                 RelaxSteps = 30,

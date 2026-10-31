@@ -142,6 +142,12 @@ namespace GravitySimulator.Sph
         public long Steps { get; private set; }
         public string Renderer { get; }
         public SphPhaseTimes Times { get; private set; }
+        /// <summary>
+        /// Gas positions (x, y, z, h per particle) the CPU read back for the last tree build: the drifted
+        /// positions of the last step, <see cref="StagedCount"/> of them. No extra GPU read-back.
+        /// </summary>
+        public ReadOnlySpan<float> StagedPositions => _stagePosData.AsSpan(0, StagedCount * 4);
+        public int StagedCount { get; private set; }
         /// <summary>Enables the GL timestamp queries (small cost: they are read at the end of the step).</summary>
         public bool MeasurePhases { get; set; } = true;
         /// <summary>Velocity factor applied after each closing kick (1 = none; below 1 to relax initial conditions).</summary>
@@ -575,6 +581,7 @@ namespace GravitySimulator.Sph
                 GL.BindBuffer(BufferTarget.CopyReadBuffer, _stageMass);
                 GL.GetBufferSubData(BufferTarget.CopyReadBuffer, IntPtr.Zero, n * 16, _stageMassData);
             }
+            StagedCount = n;
             times.TreeWait = _cpu.Elapsed.TotalMilliseconds;
             _cpu.Restart();
 
