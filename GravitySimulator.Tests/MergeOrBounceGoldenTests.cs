@@ -4,9 +4,12 @@ using Xunit.Abstractions;
 namespace GravitySimulator.Tests;
 
 /// <summary>
-/// Pins the merge-or-bounce collision path bit-for-bit: the hashes below were recorded from the
-/// code as it was before collision outcomes existed (planet-formation @ fde847c). Any change to the
-/// MergeOrBounce path (or to integration) changes them.
+/// Pins the merge-or-bounce collision path bit-for-bit. The hashes were first recorded from the code
+/// before collision outcomes existed (planet-formation @ fde847c) and re-pinned when the collision sweep
+/// moved to a hierarchical hash (planet-formation @ 817530b): pairs are now found up front and resolved
+/// in (lower, higher index) order, so a contact that only arises during the sweep waits one step
+/// (disc 1,450 -> 1,451 bodies, 2,550 -> 2,549 merges; cloud 153 -> 182 bodies, 2,847 -> 2,818 merges,
+/// 3,809 -> 3,894 bounces). Any other change to the MergeOrBounce path (or to integration) changes them.
 /// </summary>
 public class MergeOrBounceGoldenTests(ITestOutputHelper output)
 {
@@ -52,7 +55,7 @@ public class MergeOrBounceGoldenTests(ITestOutputHelper output)
     {
         var (h, s) = Run(PresetKind.DiscAroundStar, 4000, 300);
         Assert.True(s.Merges > 0);
-        Assert.Equal(0x52051991F5897B22UL, h);
+        Assert.Equal(0x15803126073B45F5UL, h);
     }
 
     [Fact]
@@ -61,6 +64,6 @@ public class MergeOrBounceGoldenTests(ITestOutputHelper output)
         var (h, s) = Run(PresetKind.SpinningCloud, 3000, 300);
         Assert.True(s.Merges > 0);
         Assert.True(s.Bounces > 0);
-        Assert.Equal(0x0EE8B84D048B7037UL, h);
+        Assert.Equal(0x69EDF157C502CEEAUL, h);
     }
 }
