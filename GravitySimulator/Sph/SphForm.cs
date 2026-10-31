@@ -173,8 +173,6 @@ namespace GravitySimulator.Sph
                 OpenTK.Graphics.OpenGL4.GL.GetInteger(OpenTK.Graphics.OpenGL4.GetPName.MinorVersion, out int minor);
                 if (major < 4 || (major == 4 && minor < 3))
                     throw new InvalidOperationException("The driver gave OpenGL " + version + ".");
-                _renderer.Initialize();
-                _glReady = true;
             }
             catch (Exception ex)
             {
@@ -182,6 +180,21 @@ namespace GravitySimulator.Sph
                     "Gas dynamics (SPH) needs OpenGL 4.3 (compute shaders), which could not be initialised on this machine. " +
                     "The other modes only need OpenGL 3.3 and still work.\n\nDetails: " + ex.Message,
                     "OpenGL 4.3 unavailable", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                BeginInvoke(new Action(Close));
+                return;
+            }
+
+            // The context is fine from here: a failure is a bug in our shaders, not the machine.
+            try
+            {
+                _renderer.Initialize();
+                _glReady = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this,
+                    "Gas dynamics (SPH) could not start because of an internal shader error (OpenGL 4.3 itself is available).\n\nDetails: " + ex.Message,
+                    "Internal shader error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 BeginInvoke(new Action(Close));
                 return;
             }
