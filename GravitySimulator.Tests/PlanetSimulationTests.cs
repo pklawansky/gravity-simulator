@@ -34,6 +34,25 @@ public class PlanetSimulationTests
     }
 
     [Fact]
+    public void Star_IsPulledByTheDisc_AndTotalMomentumIsConserved()
+    {
+        // Disc preset with every grain shifted to +x: the star must accelerate toward the dust.
+        var ps = Presets.DiscAroundStar(2_000, seed: 7);
+        for (int i = 1; i < ps.Count; i++) ps.Position[i] += new Vector3(3f, 0, 0);
+        Vector3 v0 = ps.Velocity[0];
+        var sim = new PlanetSimulation(new SimulationParameters { MergeThreshold = 0f, Restitution = 1f });
+        sim.Load(ps);
+        Vector3 p0 = TestHelpers.TotalMomentum(sim.Particles);
+
+        for (int i = 0; i < 50; i++) sim.Step();
+
+        Assert.Equal(Presets.StarMass, sim.Particles.Mass[0]);
+        Assert.True(sim.Particles.Velocity[0].X - v0.X > 0f, "star did not move toward the disc");
+        Vector3 p1 = TestHelpers.TotalMomentum(sim.Particles);
+        Assert.True(Vector3.Distance(p0, p1) < 1e-5f, $"momentum drift {Vector3.Distance(p0, p1):E2}");
+    }
+
+    [Fact]
     public void ParticlesBeyondEscapeRadius_AreRemoved()
     {
         var ps = new ParticleSystem(4);
