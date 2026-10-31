@@ -30,8 +30,13 @@ namespace GravitySimulator.Planets
         public UnitSystem Units { get; set; } = UnitSystem.SolarParsec;
         /// <summary>Stellar ages advance this many times faster than the dynamics, so stars evolve within minutes of viewing.</summary>
         public float TimeAcceleration { get; set; } = 1f;
-        /// <summary>Sink accretion radius: bound gas inside it is absorbed by stars and remnants; black holes absorb any bound body.</summary>
+        /// <summary>Sink accretion radius: bound gas inside it is absorbed by stars and remnants.</summary>
         public float AccretionRadius { get; set; } = 0.01f;
+        /// <summary>
+        /// Radius inside which a black hole captures a bound star or compact object (gas uses
+        /// <see cref="AccretionRadius"/>). 0 or less = same as the accretion radius.
+        /// </summary>
+        public float CaptureRadius { get; set; }
         /// <summary>A gas clump collapses (to a star if over 0.08 M☉) once it holds this much mass.</summary>
         public float StarFormationMass { get; set; } = StellarPhysics.FusionMass;
         /// <summary>Target mass of one ejecta gas particle (sets how many particles a shell or supernova emits).</summary>

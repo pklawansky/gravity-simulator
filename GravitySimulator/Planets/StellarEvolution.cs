@@ -8,8 +8,8 @@ namespace GravitySimulator.Planets
     /// The sub-grid stellar model as an <see cref="IBodyEvolution"/>. Each step:
     /// <list type="number">
     /// <item>Sink accretion (Bate, Bonnell &amp; Price 1995): stars and remnants absorb gas inside the
-    /// accretion radius that is bound to them; black holes absorb any bound body (a heavier sink
-    /// absorbs a lighter one). Mass, momentum and centre of mass are conserved.</item>
+    /// accretion radius that is bound to them; black holes also capture any bound body inside the
+    /// capture radius (a heavier sink absorbs a lighter one). Mass, momentum and centre of mass are conserved.</item>
     /// <item>Classification and ageing: gas clumps collapse at the star-formation mass, bodies over
     /// 0.08 M☉ ignite, white dwarfs over 1.4 M☉ become neutron stars, neutron stars over 2.5 M☉ black
     /// holes; stars age by dt x time acceleration and die at t = 10 Gyr M^-2.5.</item>
@@ -36,7 +36,7 @@ namespace GravitySimulator.Planets
         private int[] _sinks = Array.Empty<int>();
         private int[] _bhSinks = Array.Empty<int>();
         private int _sinkCount, _bhCount, _n, _chunkSize;
-        private float _racc2;
+        private float _racc2, _rcap2;
         private ParticleSystem _ps;
         private readonly Action<int> _claimChunk;
         private Vector3[] _dirs = Array.Empty<Vector3>();
@@ -111,6 +111,8 @@ namespace GravitySimulator.Planets
             _ps = ps;
             _n = n;
             _racc2 = racc * racc;
+            float rcap = _p.CaptureRadius > 0f ? _p.CaptureRadius : racc;
+            _rcap2 = rcap * rcap;
             int chunks = Math.Min(n, Environment.ProcessorCount * 4);
             _chunkSize = (n + chunks - 1) / chunks;
             if (n < 256) { for (int c = 0; c < chunks; c++) _claimChunk(c); }
@@ -146,6 +148,7 @@ namespace GravitySimulator.Planets
                 // Gas can fall into any sink; anything else only into a black hole.
                 int[] list = ci == BodyClass.Gas ? _sinks : _bhSinks;
                 int count = ci == BodyClass.Gas ? _sinkCount : _bhCount;
+                float r2 = ci == BodyClass.Gas ? _racc2 : _rcap2;
                 Vector3 pi = ps.Position[i], vi = ps.Velocity[i];
                 float best = 0f;
                 for (int k = 0; k < count; k++)
@@ -157,7 +160,7 @@ namespace GravitySimulator.Planets
                     if (IsSink(ci) && (ms < mi || (ms == mi && s > i))) continue;
                     Vector3 d = ps.Position[s] - pi;
                     float d2 = d.LengthSquared();
-                    if (d2 >= _racc2) continue;
+                    if (d2 >= r2) continue;
                     float dist = MathF.Max(MathF.Sqrt(d2), 1e-12f);
                     float energy = 0.5f * (ps.Velocity[s] - vi).LengthSquared() - (ms + mi) / dist; // specific orbital energy
                     if (energy < best) { best = energy; _claim[i] = s; }
@@ -289,8 +292,8 @@ namespace GravitySimulator.Planets
             }
         }
 
-        // Outward kick for nearby bodies (not the remnant), falling off linearly with distance and
-        // weakened for bodies heavier than a gas particle.
+        // Outward kick for nearby gas and planets (stars and remnants are too dense for the blast wave to
+        // move), falling off linearly with distance and weakened for bodies heavier than a gas particle.
         private void Blast(ParticleSystem ps, int centre)
         {
             float rb = _p.BlastRadius, vb = _p.BlastSpeed;
@@ -299,7 +302,8 @@ namespace GravitySimulator.Planets
             float rb2 = rb * rb;
             for (int j = 0; j < ps.Count; j++)
             {
-                if (j == centre || ps.Mass[j] <= 0f || ps.Class[j] >= BodyClass.WhiteDwarf) continue;
+                BodyClass cj = ps.Class[j];
+                if (j == centre || ps.Mass[j] <= 0f || (cj != BodyClass.Gas && cj != BodyClass.Planet)) continue;
                 Vector3 d = ps.Position[j] - c;
                 float d2 = d.LengthSquared();
                 if (d2 >= rb2 || d2 <= 0f) continue;

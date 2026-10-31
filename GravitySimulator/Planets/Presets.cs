@@ -71,13 +71,14 @@ namespace GravitySimulator.Planets
                 case PresetKind.StarFormingCloud:
                     p.TimeStep = 1e-4f;
                     p.Softening = 0.01f;
-                    p.EscapeRadius = 8f;
+                    p.EscapeRadius = 12f;
                     p.MaxStepsPerSecond = d.MaxStepsPerSecond;
                     p.Stellar = new StellarParameters
                     {
                         Units = UnitSystem.SolarParsec,
                         TimeAcceleration = CloudTimeAcceleration,
-                        AccretionRadius = 0.03f,
+                        AccretionRadius = 0.04f,
+                        CaptureRadius = 0.003f,
                         StarFormationMass = CloudStarFormationMass,
                         GasParticleMass = CloudMass / CloudDefaultCount,
                         GasRadius = CloudGasRadius,
@@ -98,6 +99,7 @@ namespace GravitySimulator.Planets
                         Units = UnitSystem.SolarParsec,
                         TimeAcceleration = ClusterTimeAcceleration,
                         AccretionRadius = 0.01f,
+                        CaptureRadius = 0.002f,
                         StarFormationMass = 1f,
                         GasParticleMass = 0.5f,
                         GasRadius = 0.004f,
@@ -122,13 +124,13 @@ namespace GravitySimulator.Planets
 
         public const int CloudDefaultCount = 10_000;
         public const float CloudMass = 2000f;          // M☉
-        public const float CloudRadius = 1f;           // pc
-        public const float CloudGasRadius = 0.02f;     // pc, per gas particle
+        public const float CloudRadius = 2f;           // pc
+        public const float CloudGasRadius = 0.015f;    // pc, per gas particle
         public const float CloudVirialRatio = 0.5f;    // 2T/|W| < 1, so it collapses
-        public const float CloudStarFormationMass = 1f;
-        public const float CloudMergeThreshold = 3f;
-        public const float CloudRestitution = 0.2f;
-        public const float CloudTimeAcceleration = 5f;
+        public const float CloudStarFormationMass = 1.5f;
+        public const float CloudMergeThreshold = 1f;
+        public const float CloudRestitution = 0.3f;
+        public const float CloudTimeAcceleration = 3f;
 
         public const int ClusterDefaultCount = 5_000;
         public const float ClusterPlummerRadius = 0.2f; // pc
@@ -140,7 +142,7 @@ namespace GravitySimulator.Planets
         public static int EjectaHeadroom(int count) => Math.Max(1024, count / 4);
 
         /// <summary>
-        /// Uniform sphere (1 pc, 2000 M☉) of equal gas particles with a divergence-free random
+        /// Uniform sphere (2 pc, 2000 M☉) of equal gas particles with a divergence-free random
         /// (turbulent) velocity field at virial ratio 0.5, so it collapses into filaments and clumps.
         /// Centre of mass at rest.
         /// </summary>
