@@ -192,6 +192,11 @@ namespace GravitySimulator.Planets
                 return;
             }
 
+            // GPU gravity when OpenGL 4.3 compute is available; otherwise the CPU tree (the readout says which),
+            // with the lower CPU ceiling. The Particles box maximum follows the ceiling.
+            bool gpu = _sim.TryEnableGpuGravity();
+            _sim.Parameters.MaxLiveParticles = gpu ? SimulationParameters.DefaultMaxLiveParticles : SimulationParameters.CpuMaxLiveParticles;
+            _count.Maximum = _sim.Parameters.MaxLiveParticles;
             ApplyPresetDefaults();
             ApplyParameters();
             ResetSimulation();
@@ -321,6 +326,13 @@ namespace GravitySimulator.Planets
             sb.AppendLine($"Bodies    {s.Count,10:N0}");
             sb.AppendLine($"Steps/s   {s.StepsPerSecond,10:F1}");
             sb.AppendLine($"FPS       {_fps,10:F1}");
+            sb.AppendLine(GravityReadout());
+            var t = _sim.LastPhaseTimes;
+            if (t.Total > 0)
+            {
+                sb.AppendLine($"Gravity ms{t.TreeBuild + t.Gravity,10:F0}"); // tree build + forces + kick
+                sb.AppendLine($"Collide ms{t.Collisions,10:F0}");
+            }
             sb.AppendLine($"Sim time  {s.SimTime,10:F2}");
             sb.AppendLine($"Steps     {s.StepCount,10:N0}");
             sb.AppendLine($"Merges    {s.Merges,10:N0}");
@@ -369,6 +381,18 @@ namespace GravitySimulator.Planets
                 sb.AppendLine("Saved: " + Path.GetFileName(_lastScreenshot));
             }
             _readout.Text = sb.ToString();
+        }
+
+        // "Gravity   GPU" / "Gravity   CPU", plus the reason on a second line when the GPU is unavailable.
+        private string GravityReadout()
+        {
+            string backend = _sim.GravityBackend;
+            if (_sim.GpuGravityActive) return "Gravity          GPU";
+            int open = backend.IndexOf('(');
+            if (open < 0) return "Gravity          CPU";
+            string why = backend.Substring(open).Trim();
+            if (why.Length > 34) why = why.Substring(0, 31) + "...)";
+            return "Gravity          CPU" + Environment.NewLine + " " + why;
         }
 
         private void OnFormClosing(object sender, FormClosingEventArgs e)

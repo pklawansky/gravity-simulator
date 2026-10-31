@@ -399,7 +399,8 @@ public class CollisionResolverOutcomesTests
     [Fact]
     public void Simulation_EffectiveCeiling_IsTheLargerOfTheConstantAndTheLoadCount()
     {
-        Assert.Equal(150_000, SimulationParameters.DefaultMaxLiveParticles);
+        Assert.Equal(450_000, SimulationParameters.DefaultMaxLiveParticles); // with GPU gravity
+        Assert.Equal(150_000, SimulationParameters.CpuMaxLiveParticles);
         Assert.Equal(SimulationParameters.DefaultMaxLiveParticles, new SimulationParameters().MaxLiveParticles);
 
         var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 100 });
