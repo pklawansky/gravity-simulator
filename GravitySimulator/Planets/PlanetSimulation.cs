@@ -82,6 +82,25 @@ namespace GravitySimulator.Planets
         public static readonly SimulationStats Empty = new SimulationStats();
     }
 
+    /// <summary>Wall time of the phases of the last step, in milliseconds.</summary>
+    public readonly struct PlanetPhaseTimes
+    {
+        /// <summary>Opening kick + drift.</summary>
+        public double KickDrift { get; init; }
+        /// <summary>Octree build (CPU, both gravity backends).</summary>
+        public double TreeBuild { get; init; }
+        /// <summary>Gravity (CPU walk, or GPU flatten + upload + walk + read-back), force contributors and the closing kick.</summary>
+        public double Gravity { get; init; }
+        /// <summary>Of <see cref="Gravity"/>, GPU path only: flatten, pack and order on the CPU.</summary>
+        public double GpuFlatten { get; init; }
+        /// <summary>Of <see cref="Gravity"/>, GPU path only: upload, walk and read-back on the GL thread.</summary>
+        public double GpuWalk { get; init; }
+        public double Collisions { get; init; }
+        /// <summary>Body evolution, escape removal and the snapshot publish.</summary>
+        public double Rest { get; init; }
+        public double Total => KickDrift + TreeBuild + Gravity + Collisions + Rest;
+    }
+
     /// <summary>
     /// A published copy of the particle state for the renderer. Buffers are recycled
     /// (triple buffering), but a snapshot is never written while the reader holds it.
@@ -148,6 +167,10 @@ namespace GravitySimulator.Planets
         private StellarEvolution _stellar;
         private RadiationPressure _radiation;
 
+        private GpuGravity _gpu;
+        private volatile string _gravityBackend = CpuBackendName;
+        private const string CpuBackendName = "CPU Barnes-Hut";
+
         /// <summary>Extra forces added after gravity each step (see <see cref="IForceContributor"/>).</summary>
         public List<IForceContributor> ForceContributors { get; } = new List<IForceContributor>();
         /// <summary>Per-step body evolution after collisions (see <see cref="IBodyEvolution"/>).</summary>
@@ -170,6 +193,54 @@ namespace GravitySimulator.Planets
         public ParticleSystem Particles => _ps;
 
         public SimulationStats Stats => _stats;
+
+        /// <summary>Phase timings of the last step.</summary>
+        public PlanetPhaseTimes LastPhaseTimes { get; private set; }
+
+        /// <summary>Which gravity backend is active, for the readout (e.g. "GPU (NVIDIA ...)" or "CPU Barnes-Hut").</summary>
+        public string GravityBackend => _gravityBackend;
+        /// <summary>True while gravity runs on the GPU.</summary>
+        public bool GpuGravityActive => _gpu != null;
+
+        /// <summary>
+        /// Moves gravity onto the GPU (OpenGL 4.3 compute, <see cref="GpuGravity"/>). Returns false and stays on
+        /// the CPU tree, with the reason in <see cref="GravityBackend"/>, when that is unavailable. Off by
+        /// default: the CPU path is deterministic (the golden-hash tests rely on it). If the GPU fails later,
+        /// the simulation falls back to the CPU tree on its own.
+        /// </summary>
+        public bool TryEnableGpuGravity()
+        {
+            lock (_gate)
+            {
+                if (_gpu != null) return true;
+                var g = GpuGravity.TryCreate(out string error);
+                if (g == null)
+                {
+                    _gravityBackend = CpuBackendName + " (GPU unavailable: " + Shorten(error) + ")";
+                    return false;
+                }
+                _gpu = g;
+                _gravityBackend = "GPU (" + g.Renderer + ")";
+                return true;
+            }
+        }
+
+        /// <summary>Returns gravity to the CPU tree.</summary>
+        public void DisableGpuGravity()
+        {
+            lock (_gate)
+            {
+                _gpu?.Dispose();
+                _gpu = null;
+                _gravityBackend = CpuBackendName;
+            }
+        }
+
+        private static string Shorten(string s)
+        {
+            s = (s ?? "unknown").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            return s.Length > 60 ? s.Substring(0, 57) + "..." : s;
+        }
 
         /// <summary>Live-count ceiling for fragments: max(<see cref="SimulationParameters.MaxLiveParticles"/>, count at Load).</summary>
         public int LiveParticleCeiling => Math.Max(_p.MaxLiveParticles, _loadCount);
@@ -224,8 +295,11 @@ namespace GravitySimulator.Planets
             _halfDt = _dt * 0.5f;
 
             RunChunks(_kickDriftChunk);       // v += a dt/2 ; x += v dt
+            long t1 = Stopwatch.GetTimestamp();
             BuildTree();
+            long t2 = Stopwatch.GetTimestamp();
             ForcesAndKick();                  // a = F(x) ; v += a dt/2
+            long t3 = Stopwatch.GetTimestamp();
 
             _collisions.MergeThreshold = _p.MergeThreshold;
             _collisions.Restitution = _p.Restitution;
@@ -242,6 +316,7 @@ namespace GravitySimulator.Planets
             _merges += _collisions.LastMerges;
             _bounces += _collisions.LastBounces;
             _bhContactMergers += _collisions.LastBlackHoleMergers;
+            long t4 = Stopwatch.GetTimestamp();
 
             foreach (var evolution in Evolutions) evolution.Evolve(_ps, _dt);
 
@@ -267,7 +342,21 @@ namespace GravitySimulator.Planets
             _lastStepStart = t0;
             _stepSecondsEma = _stepSecondsEma == 0 ? secs : _stepSecondsEma * 0.9 + secs * 0.1;
             Publish();
+            long t5 = Stopwatch.GetTimestamp();
+            LastPhaseTimes = new PlanetPhaseTimes
+            {
+                KickDrift = Ms(t0, t1),
+                TreeBuild = Ms(t1, t2),
+                Gravity = Ms(t2, t3),
+                GpuFlatten = _lastGpu ? _gpu?.LastFlattenMs ?? 0 : 0,
+                GpuWalk = _lastGpu ? _gpu?.LastGpuMs ?? 0 : 0,
+                Collisions = Ms(t3, t4),
+                Rest = Ms(t4, t5),
+            };
         }
+
+        private static double Ms(long a, long b) => (b - a) * 1000.0 / Stopwatch.Frequency;
+        private bool _lastGpu;
 
         private void BuildTree()
         {
@@ -285,12 +374,37 @@ namespace GravitySimulator.Planets
 
         // Gravity and the half kick fused in one pass when there are no extra forces (planet presets);
         // otherwise gravity, then the contributors, then the kick.
+        // With GPU gravity: the GPU writes the accelerations, then the contributors (CPU), then the kick.
         private void ForcesAndKick()
         {
+            _lastGpu = _gpu != null && TryGpuGravity();
+            if (_lastGpu)
+            {
+                foreach (var f in ForceContributors) f.AddAccelerations(_ps);
+                RunChunks(_kickChunk);
+                return;
+            }
             if (ForceContributors.Count == 0) { RunChunks(_forceKickChunk); return; }
             RunChunks(_forceChunk);
             foreach (var f in ForceContributors) f.AddAccelerations(_ps);
             RunChunks(_kickChunk);
+        }
+
+        // Gravity on the GPU into _ps.Acceleration; on failure, drops to the CPU tree for good (returns false).
+        private bool TryGpuGravity()
+        {
+            try
+            {
+                _gpu.Compute(_tree, _ps, _p.Theta, _p.Softening);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _gpu.Dispose();
+                _gpu = null;
+                _gravityBackend = CpuBackendName + " (GPU failed: " + Shorten(ex.Message) + ")";
+                return false;
+            }
         }
 
         private void ForceChunk(int c)
@@ -522,6 +636,8 @@ namespace GravitySimulator.Planets
             _running.Set();
             _wake.Set();
             _thread?.Join(TimeSpan.FromSeconds(10));
+            _gpu?.Dispose();
+            _gpu = null;
         }
     }
 }

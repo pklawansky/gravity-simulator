@@ -257,9 +257,11 @@ namespace GravitySimulator.Planets
         /// Writes the tree built by the last <see cref="Build"/> into <paramref name="dst"/> in the
         /// flattened, stackless next/skip layout used by the GPU walk (see <see cref="Sph.FlatTree"/>).
         /// Leaves carry their body's softening length from <paramref name="bodySoftening"/> (indexed
-        /// like the particle system), or <see cref="Softening"/> when it is null.
+        /// like the particle system), or <see cref="Softening"/> when it is null. When
+        /// <paramref name="bodyOrder"/> is given (length at least the particle count), it receives the
+        /// indices of the bodies in the tree in walk order (spatially coherent); returns how many.
         /// </summary>
-        public void Flatten(Sph.FlatTree dst, float[] bodySoftening = null)
+        public int Flatten(Sph.FlatTree dst, float[] bodySoftening = null, int[] bodyOrder = null)
         {
             int count = _nodeCount;
             dst.EnsureCapacity(count);
@@ -296,7 +298,7 @@ namespace GravitySimulator.Planets
             // Pre-order emission: pop a node, give it the next index, push its children in reverse
             // so child 0 is emitted first (and lands at index + 1).
             int[] stack = _flatStack;
-            int sp = 0, next = 0;
+            int sp = 0, next = 0, ordered = 0;
             if (count > 0) stack[sp++] = 0;
             while (sp > 0)
             {
@@ -327,8 +329,11 @@ namespace GravitySimulator.Planets
                     dst.CentreHalf[idx] = new Vector4(_centre[n], _half[n]);
                     dst.Soft2[idx] = _soft2[n];
                     dst.Body[idx] = Math.Max(b, 0);
+                    if (bodyOrder != null)
+                        for (int o = b; o >= 0; o = _nextInLeaf[o]) bodyOrder[ordered++] = o;
                 }
             }
+            return ordered;
         }
 
         private int[] _subtree = Array.Empty<int>();

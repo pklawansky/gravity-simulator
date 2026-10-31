@@ -5,8 +5,8 @@ namespace GravitySimulator.Tests;
 
 /// <summary>
 /// Every GL program of both 3D modes compiles and links (skipped without an OpenGL 4.3 context): the
-/// renderers of Planet formation and of the SPH mode, the shared compact-body sphere shader, and the
-/// SPH compute shaders.
+/// renderers of Planet formation and of the SPH mode, the shared compact-body sphere shader, the
+/// SPH compute shaders and Planet formation's GPU gravity.
 /// </summary>
 [Trait("Category", "GPU")]
 [Collection("GPU")]
@@ -48,5 +48,14 @@ public class ShaderCompileTests
     {
         using var gl = Context();
         using var solver = new SphGpuSolver(new SphParameters(), 64);
+    }
+
+    /// <summary>Planet formation's GPU gravity (planet_gravity.comp) builds on its own GL thread.</summary>
+    [SkippableFact]
+    public void PlanetGravityShader_Builds()
+    {
+        using (Context()) { }
+        using var g = GpuGravity.TryCreate(out string error);
+        Assert.True(g != null, "planet_gravity.comp: " + error);
     }
 }
