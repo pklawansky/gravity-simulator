@@ -27,6 +27,8 @@ namespace GravitySimulator.Sph
         public float BlackHoleAccretionRadius { get; init; }
         public UnitSystem Units { get; init; }
         public float CameraDistance { get; init; }
+        /// <summary>Radius whose mean column density sets the exposure (0 = from the initial gas).</summary>
+        public float ExposureRadius { get; init; }
         /// <summary>Δu given to gas at the centre of a supernova blast (falls off linearly to the blast radius).</summary>
         public float SupernovaDu { get; init; }
         /// <summary>Internal energy of stellar ejecta added as gas.</summary>
@@ -177,7 +179,7 @@ namespace GravitySimulator.Sph
                 Gas = gas,
                 Sinks = new ParticleSystem(256),
                 Units = UnitSystem.SolarParsec,
-                CameraDistance = 4.2f,
+                CameraDistance = 2.6f,
                 SupernovaDu = 2000f,
                 EjectaU = 500f,
                 Headroom = Headroom(count),
@@ -280,6 +282,7 @@ namespace GravitySimulator.Sph
                 SinkRadius = 0f,
                 MinInternalEnergy = 1e-3f,
                 Theta = 0.6f,
+                MaxTimeStep = 4e-6f, // keeps the debris watchable once the star has spread out
             };
             return new SphScenario
             {
@@ -300,7 +303,8 @@ namespace GravitySimulator.Sph
                 Sinks = sinks,
                 BlackHoleAccretionRadius = 6f * rs,
                 Units = units,
-                CameraDistance = 1.6f,
+                CameraDistance = 2f,
+                ExposureRadius = 0.2f,
                 SupernovaDu = 0f,
                 EjectaU = 0f,
                 RelaxSteps = 30,

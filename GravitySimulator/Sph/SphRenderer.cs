@@ -81,6 +81,7 @@ namespace GravitySimulator.Sph
             _rhoRef = MathF.Pow(10f, logRho);
             _refRadius = (float)Math.Sqrt(sumR2 / n * 5.0 / 3.0); // radius of a uniform sphere with this rms
             _refMass = (float)mass;
+            if (sc.ExposureRadius > 0f) _refRadius = sc.ExposureRadius;
         }
 
         public void Render(SphSimulation sim, OrbitCamera camera, int width, int height)
