@@ -83,28 +83,22 @@ namespace GravitySimulator.Planets
                 _sorted[_bucketStart[h] + _bucketCount[h]++] = i;
             }
 
-            // Small-vs-small via the 27 neighbouring cells.
-            Span<int> seen = stackalloc int[27];
+            // Small-vs-small: own cell (pairs with j > i) plus the 13 "forward" neighbour cells (all j),
+            // so each neighbouring pair of cells is scanned once. Hash collisions can make a pair show
+            // up twice; that is harmless (merged bodies are skipped, separated bodies no longer touch).
             for (int i = 0; i < n; i++)
             {
                 if (_isOversize[i] || ps.Mass[i] <= 0f) continue;
                 Vector3 p = ps.Position[i];
                 int cx = (int)MathF.Floor(p.X * invCell), cy = (int)MathF.Floor(p.Y * invCell), cz = (int)MathF.Floor(p.Z * invCell);
-                int seenCount = 0;
-                for (int dz = -1; dz <= 1; dz++)
-                for (int dy = -1; dy <= 1; dy++)
-                for (int dx = -1; dx <= 1; dx++)
+                for (int s = 0; s < 14; s++)
                 {
-                    int h = Hash(cx + dx, cy + dy, cz + dz) & mask;
-                    bool dup = false;
-                    for (int s = 0; s < seenCount; s++) if (seen[s] == h) { dup = true; break; }
-                    if (dup) continue;
-                    seen[seenCount++] = h;
+                    int h = Hash(cx + Stencil[s * 3], cy + Stencil[s * 3 + 1], cz + Stencil[s * 3 + 2]) & mask;
                     int start = _bucketStart[h], end = start + _bucketCount[h];
                     for (int k = start; k < end; k++)
                     {
                         int j = _sorted[k];
-                        if (j <= i || ps.Mass[j] <= 0f) continue;
+                        if (j == i || (s == 0 && j < i) || ps.Mass[j] <= 0f || _isOversize[j]) continue;
                         TryResolve(ps, i, j);
                         if (ps.Mass[i] <= 0f) goto nextI;
                     }
@@ -167,6 +161,23 @@ namespace GravitySimulator.Planets
             ps.Position[i] -= nrm * (overlap * m2 / mt);
             ps.Position[j] += nrm * (overlap * m1 / mt);
             LastBounces++;
+        }
+
+        // Own cell first, then the 13 neighbours with (dz, dy, dx) lexicographically after (0, 0, 0).
+        private static readonly int[] Stencil = BuildStencil();
+
+        private static int[] BuildStencil()
+        {
+            var s = new int[14 * 3];
+            int k = 3; // entry 0 is (0, 0, 0)
+            for (int dz = -1; dz <= 1; dz++)
+            for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                if (dz < 0 || (dz == 0 && (dy < 0 || (dy == 0 && dx <= 0)))) continue;
+                s[k++] = dx; s[k++] = dy; s[k++] = dz;
+            }
+            return s;
         }
 
         private static int Hash(int x, int y, int z) => (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
