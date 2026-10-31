@@ -74,8 +74,13 @@ namespace GravitySimulator.Planets
         public const float Eta = -1.5f;
         /// <summary>Q_R / Q'*_RD above which the universal law gives M_lr &lt; 0.1 M_tot (LS12 §4.1).</summary>
         public const float SuperCatastrophicRatio = 1.8f;
-        /// <summary>At most this many fragments per collision.</summary>
-        public const int MaxFragments = 8;
+        /// <summary>At most this many fragments per collision (2026-10-31 amendment; was 8).</summary>
+        public const int MaxFragmentsPerEvent = 64;
+        /// <summary>
+        /// Lightest fragment as a fraction of the starting grain mass m0 (2026-10-31 amendment: m0/4, radius
+        /// 0.63 of a grain's, so a hit with only a grain or two of debris still throws a few visible pieces).
+        /// </summary>
+        public const float MinFragmentGrainFraction = 0.25f;
         /// <summary>Cumulative fragment size-distribution slope beta (LS12 eq. 31; appendix value 2.85).</summary>
         public const float Beta = 2.85f;
 
@@ -84,8 +89,8 @@ namespace GravitySimulator.Planets
 
         private static float[] BuildSplitWeights()
         {
-            var w = new float[MaxFragments];
-            for (int k = 0; k < MaxFragments; k++) w[k] = MathF.Pow(k + 1, -3f / Beta);
+            var w = new float[MaxFragmentsPerEvent];
+            for (int k = 0; k < MaxFragmentsPerEvent; k++) w[k] = MathF.Pow(k + 1, -3f / Beta);
             return w;
         }
 
@@ -246,16 +251,19 @@ namespace GravitySimulator.Planets
         }
 
         /// <summary>
-        /// Splits <paramref name="debris"/> into at most <see cref="MaxFragments"/> fragments, largest first,
-        /// with masses m_k ~ k^(-3/beta) (the k-th largest body of LS12's eq. 31 size distribution) and none
-        /// lighter than <paramref name="minMass"/>. If <paramref name="maxCount"/> (the particle ceiling) is
-        /// smaller, the smallest fragments are dropped and their mass goes into the largest. Returns the
-        /// count (0 = the debris goes back into the remnant). Masses sum to <paramref name="debris"/>.
+        /// Splits <paramref name="debris"/> into n = min(<see cref="MaxFragmentsPerEvent"/>, floor(debris / minMass))
+        /// fragments at most, largest first, with masses m_k ~ k^(-3/beta): the expected k-th largest body of
+        /// LS12's eq. 31 cumulative distribution N(&gt;D) ~ D^-beta (rank k means N(&gt;m_k) = k, so
+        /// m_k ~ k^(-3/beta)). The smallest are trimmed until none is lighter than <paramref name="minMass"/>.
+        /// Only when the particle ceiling (<paramref name="maxCount"/>) is smaller are the smallest dropped and
+        /// their mass folded into the largest; <paramref name="folded"/> says how many. Returns the count
+        /// (0 = the debris goes back into the remnant). Masses sum to <paramref name="debris"/>.
         /// </summary>
-        public static int SplitFragments(float debris, float minMass, int maxCount, Span<float> masses)
+        public static int SplitFragments(float debris, float minMass, int maxCount, Span<float> masses, out int folded)
         {
-            if (maxCount <= 0 || !(debris > 0f) || debris < minMass) return 0;
-            int n = minMass > 0f ? (int)Math.Min(MaxFragments, Math.Floor(debris / minMass)) : MaxFragments;
+            folded = 0;
+            if (!(debris > 0f) || debris < minMass) return 0;
+            int n = minMass > 0f ? (int)Math.Min(MaxFragmentsPerEvent, Math.Floor(debris / minMass)) : MaxFragmentsPerEvent;
             n = Math.Max(1, n);
             float sum = 0f;
             for (int k = 0; k < n; k++) sum += SplitWeights[k];
@@ -264,12 +272,18 @@ namespace GravitySimulator.Planets
                 sum -= SplitWeights[n - 1];
                 n--;
             }
+            maxCount = Math.Max(0, maxCount);
+            if (n > maxCount) { folded = n - maxCount; n = maxCount; }
+            if (n == 0) return 0;
             for (int k = 0; k < n; k++) masses[k] = debris * SplitWeights[k] / sum;
-            if (n > maxCount) n = maxCount;
             float rest = 0f;
             for (int k = 1; k < n; k++) rest += masses[k];
-            masses[0] = debris - rest; // largest takes any dropped mass and the rounding
+            masses[0] = debris - rest; // largest takes any folded mass and the rounding
             return n;
         }
+
+        /// <summary><see cref="SplitFragments(float, float, int, Span{float}, out int)"/> without the folded count.</summary>
+        public static int SplitFragments(float debris, float minMass, int maxCount, Span<float> masses) =>
+            SplitFragments(debris, minMass, maxCount, masses, out _);
     }
 }

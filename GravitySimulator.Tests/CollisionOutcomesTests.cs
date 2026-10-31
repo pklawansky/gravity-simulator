@@ -216,11 +216,29 @@ public class CollisionOutcomesTests
     // ---- fragment split ----------------------------------------------------------------------
 
     [Fact]
-    public void Split_AtMost8_NoneBelowM0_DescendingAndSumsToDebris()
+    public void Split_AtMostTheCap_NoneBelowTheMinimum_DescendingAndSumsToDebris()
     {
-        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragments];
+        Assert.Equal(64, CollisionOutcomes.MaxFragmentsPerEvent);
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
+        int n = CollisionOutcomes.SplitFragments(10.0f, 0.01f, 100, m, out int folded);
+        Assert.Equal(64, n);
+        Assert.Equal(0, folded);
+        float sum = 0f;
+        for (int k = 0; k < n; k++)
+        {
+            Assert.True(m[k] >= 0.01f);
+            if (k > 0) Assert.True(m[k] <= m[k - 1]);
+            sum += m[k];
+        }
+        Assert.Equal(10.0f, sum, 4);
+    }
+
+    [Fact]
+    public void Split_LessDebris_FewerFragments_StillNoneBelowTheMinimum()
+    {
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
         int n = CollisionOutcomes.SplitFragments(1.0f, 0.01f, 100, m);
-        Assert.Equal(8, n);
+        Assert.InRange(n, 2, 63);
         float sum = 0f;
         for (int k = 0; k < n; k++)
         {
@@ -234,14 +252,14 @@ public class CollisionOutcomesTests
     [Fact]
     public void Split_DebrisBelowM0_MakesNoFragments()
     {
-        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragments];
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
         Assert.Equal(0, CollisionOutcomes.SplitFragments(0.009f, 0.01f, 100, m));
     }
 
     [Fact]
     public void Split_FewGrainsOfDebris_UsesFewerFragments_AllAtLeastM0()
     {
-        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragments];
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
         int n = CollisionOutcomes.SplitFragments(0.035f, 0.01f, 100, m);
         Assert.InRange(n, 1, 3);
         float sum = 0f;
@@ -252,14 +270,61 @@ public class CollisionOutcomesTests
     [Fact]
     public void Split_CeilingReducesCount_ExcessGoesToTheLargestFragment()
     {
-        Span<float> full = stackalloc float[CollisionOutcomes.MaxFragments];
-        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragments];
+        Span<float> full = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
         int nFull = CollisionOutcomes.SplitFragments(1f, 0.01f, 100, full);
-        int n = CollisionOutcomes.SplitFragments(1f, 0.01f, 3, m);
+        int n = CollisionOutcomes.SplitFragments(1f, 0.01f, 3, m, out int folded);
         Assert.Equal(3, n);
+        Assert.Equal(nFull - 3, folded);
         Assert.Equal(full[1], m[1], 6);
         Assert.Equal(full[2], m[2], 6);
         Assert.Equal(1f - full[1] - full[2], m[0], 5);
-        Assert.Equal(0, CollisionOutcomes.SplitFragments(1f, 0.01f, 0, m));
+        Assert.Equal(0, CollisionOutcomes.SplitFragments(1f, 0.01f, 0, m, out folded));
+        Assert.Equal(nFull, folded); // at the ceiling every fragment is folded (back into the remnant)
+    }
+
+    [Fact]
+    public void Split_BelowTheCeiling_NothingIsFolded()
+    {
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
+        for (float debris = 0.01f; debris < 20f; debris *= 1.3f)
+        {
+            CollisionOutcomes.SplitFragments(debris, 0.01f, 1_000, m, out int folded);
+            Assert.Equal(0, folded);
+        }
+    }
+
+    [Fact]
+    public void Split_CountGrowsWithDebrisMass_UpToTheCap()
+    {
+        Span<float> m = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
+        const float min = 0.01f;
+        int previous = 0;
+        bool reachedCap = false;
+        for (int grains = 1; grains <= 2_000; grains++)
+        {
+            float debris = grains * min * 1.0001f;
+            int n = CollisionOutcomes.SplitFragments(debris, min, 1_000_000, m);
+            Assert.True(n >= previous, $"debris {debris}: {n} fragments after {previous}");
+            Assert.True(n <= Math.Min(CollisionOutcomes.MaxFragmentsPerEvent, grains), $"debris {debris}: {n} fragments");
+            for (int k = 0; k < n; k++) Assert.True(m[k] >= min, $"debris {debris}: fragment {k} mass {m[k]}");
+            if (n == CollisionOutcomes.MaxFragmentsPerEvent) reachedCap = true;
+            previous = n;
+        }
+        Assert.Equal(1, CollisionOutcomes.SplitFragments(1.5f * min, min, 100, m));
+        Assert.True(CollisionOutcomes.SplitFragments(10f * min, min, 100, m) >= 3);
+        Assert.True(reachedCap, "64 fragments never reached");
+    }
+
+    [Fact]
+    public void FragmentSpeed_FromJustAboveEscape_SmallerFaster_CappedAtTwice()
+    {
+        Assert.Equal(1.05f, CollisionResolver.FragmentSpeedFactor(1f, 1f, 0f), 6);
+        Assert.Equal(1.25f, CollisionResolver.FragmentSpeedFactor(1f, 1f, 1f), 5);
+        Assert.True(CollisionResolver.FragmentSpeedFactor(1f, 0.1f, 0.5f) > CollisionResolver.FragmentSpeedFactor(1f, 0.5f, 0.5f));
+        Assert.Equal(2f, CollisionResolver.FragmentSpeedFactor(1f, 0.001f, 1f), 6);
+        for (float r = 0f; r <= 1f; r += 0.1f)
+        for (float mass = 1f; mass > 1e-3f; mass *= 0.5f)
+            Assert.InRange(CollisionResolver.FragmentSpeedFactor(1f, mass, r), 1.05f, 2f);
     }
 }

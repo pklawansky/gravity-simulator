@@ -19,6 +19,14 @@ namespace GravitySimulator.Planets
         public float Restitution { get; set; } = 0.5f;
         /// <summary>Rule for rocky (Planet-Planet) collisions; other pairs always merge or bounce.</summary>
         public CollisionModel CollisionModel { get; set; } = CollisionModel.Outcomes;
+        /// <summary>
+        /// Outcomes: collision fragments may raise the live particle count up to this ceiling (or to the count at
+        /// Load, if that is larger); at the ceiling, further fragments are folded into the largest fragment or the
+        /// remnant. Chosen from measured step cost on a 32-core machine (2026-10-31 amendment of the collision
+        /// outcomes spec): the largest count that still sustains about 5 steps/s.
+        /// </summary>
+        public int MaxLiveParticles { get; set; } = DefaultMaxLiveParticles;
+        public const int DefaultMaxLiveParticles = 100_000;
         /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
         public float MaxStepsPerSecond { get; set; } = 120f;
         /// <summary>
@@ -42,6 +50,8 @@ namespace GravitySimulator.Planets
         public long Erosions { get; init; }
         public long Disruptions { get; init; }
         public long FragmentsCreated { get; init; }
+        /// <summary>Fragments not created because the live count was at the ceiling (their mass was folded).</summary>
+        public long FragmentsFoldedAtCeiling { get; init; }
         public long Escaped { get; init; }
         public double StepsPerSecond { get; init; }
         /// <summary>Mass of the heaviest body if it holds over half the total (the star); otherwise 0.</summary>
@@ -109,7 +119,7 @@ namespace GravitySimulator.Planets
         private ParticleSystem _ps = new ParticleSystem(1);
 
         private long _steps, _merges, _bounces, _escaped, _version, _bhContactMergers;
-        private long _partialAccretions, _hitAndRuns, _erosions, _disruptions, _fragments;
+        private long _partialAccretions, _hitAndRuns, _erosions, _disruptions, _fragments, _folded;
         private int _loadCount;
         private double _simTime, _stepSecondsEma;
         private long _lastStepStart;
@@ -160,6 +170,9 @@ namespace GravitySimulator.Planets
         public ParticleSystem Particles => _ps;
 
         public SimulationStats Stats => _stats;
+
+        /// <summary>Live-count ceiling for fragments: max(<see cref="SimulationParameters.MaxLiveParticles"/>, count at Load).</summary>
+        public int LiveParticleCeiling => Math.Max(_p.MaxLiveParticles, _loadCount);
         public bool IsRunning => _running.IsSet && IsThreadAlive;
         public bool IsThreadAlive => _thread != null && _thread.IsAlive;
 
@@ -170,7 +183,7 @@ namespace GravitySimulator.Planets
             {
                 _ps = initial;
                 _steps = _merges = _bounces = _escaped = _bhContactMergers = 0;
-                _partialAccretions = _hitAndRuns = _erosions = _disruptions = _fragments = 0;
+                _partialAccretions = _hitAndRuns = _erosions = _disruptions = _fragments = _folded = 0;
                 _loadCount = _ps.Count;
                 ConfigureStellarModel();
                 _simTime = 0;
@@ -217,14 +230,15 @@ namespace GravitySimulator.Planets
             _collisions.MergeThreshold = _p.MergeThreshold;
             _collisions.Restitution = _p.Restitution;
             _collisions.Model = _p.CollisionModel;
-            _collisions.MaxBodies = _loadCount;
-            _collisions.MinFragmentMass = _grainMass;
+            _collisions.MaxBodies = LiveParticleCeiling;
+            _collisions.MinFragmentMass = _grainMass * CollisionOutcomes.MinFragmentGrainFraction;
             _collisions.Resolve(_ps);
             _partialAccretions += _collisions.LastPartialAccretions;
             _hitAndRuns += _collisions.LastHitAndRuns;
             _erosions += _collisions.LastErosions;
             _disruptions += _collisions.LastDisruptions;
             _fragments += _collisions.LastFragments;
+            _folded += _collisions.LastFoldedAtCeiling;
             _merges += _collisions.LastMerges;
             _bounces += _collisions.LastBounces;
             _bhContactMergers += _collisions.LastBlackHoleMergers;
@@ -449,6 +463,7 @@ namespace GravitySimulator.Planets
                 Erosions = _erosions,
                 Disruptions = _disruptions,
                 FragmentsCreated = _fragments,
+                FragmentsFoldedAtCeiling = _folded,
                 Escaped = _escaped,
                 StepsPerSecond = _stepSecondsEma > 0 ? 1.0 / _stepSecondsEma : 0,
                 StarMass = star >= 0 ? m[star] : 0f,

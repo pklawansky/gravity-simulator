@@ -46,6 +46,8 @@ namespace GravitySimulator.Planets
         public int LastDisruptions { get; private set; }
         /// <summary>Fragments created this step.</summary>
         public int LastFragments { get; private set; }
+        /// <summary>Fragments not created this step because the live count was at <see cref="MaxBodies"/> (their mass was folded).</summary>
+        public int LastFoldedAtCeiling { get; private set; }
 
         // Reused buffers (grown on demand, never per step in steady state).
         private int[] _cellOf = Array.Empty<int>();
@@ -68,7 +70,7 @@ namespace GravitySimulator.Planets
             LastMerges = 0;
             LastBounces = 0;
             LastBlackHoleMergers = 0;
-            LastPartialAccretions = LastHitAndRuns = LastErosions = LastDisruptions = LastFragments = 0;
+            LastPartialAccretions = LastHitAndRuns = LastErosions = LastDisruptions = LastFragments = LastFoldedAtCeiling = 0;
             _fragCount = _removed = 0;
             int n = ps.Count;
             if (n < 2) return;
@@ -156,6 +158,8 @@ namespace GravitySimulator.Planets
             }
 
             if (LastMerges > 0 || _removed > 0) ps.Compact();
+            if (ps.Count + _fragCount > ps.Capacity) // grow geometrically, but never past the ceiling
+                ps.EnsureCapacity(Math.Max(ps.Count + _fragCount, Math.Min(_ceiling, 2 * ps.Capacity)));
             for (int k = 0; k < _fragCount; k++)
             {
                 int f = ps.Add(_fragPos[k], _fragVel[k], _fragMass[k], _fragRadius[k]);
@@ -291,19 +295,22 @@ namespace GravitySimulator.Planets
 
         /// <summary>
         /// Turns body <paramref name="rem"/> into the remnant of a system of <paramref name="systemMass"/>, with
-        /// <paramref name="debris"/> split into fragments (none below m0, at most 8, within the ceiling; any
-        /// remainder stays in the remnant). Fragments leave in a 45-degree double cone around the impact
-        /// axis at 1.05-1.3 x the remnant's escape speed, sides chosen to balance momentum, stacked just
-        /// outside the remnant so none overlap. The whole set is then shifted (position and velocity) so its
-        /// centre of mass and momentum equal the inputs exactly: mass, momentum and centre of mass are
+        /// <paramref name="debris"/> split into fragments (none below the minimum fragment mass, at most
+        /// <see cref="CollisionOutcomes.MaxFragmentsPerEvent"/>; only at the ceiling is the excess folded into the
+        /// largest fragment or the remnant). Fragments leave in a 45-degree double cone around the impact axis,
+        /// sides chosen to balance momentum, at <see cref="FragmentSpeedFactor"/> x the remnant's escape speed
+        /// (smaller fragments faster), placed just outside the remnant and pushed outward along their own
+        /// direction until they clear every fragment already placed (and the obstacle). The whole set is then
+        /// shifted (position and velocity) so its centre of mass and momentum equal the inputs exactly: mass, momentum and centre of mass are
         /// conserved and the set's net momentum relative to the centre of mass is zero.
         /// </summary>
         private void EmitFragments(ParticleSystem ps, int rem, float systemMass, float debris, float rho, float m0,
             Vector3 x, Vector3 v, Vector3 a, Vector3 axis, int obstacle)
         {
             int budget = Math.Max(0, _ceiling - (_startCount - LastMerges - _removed) - _fragCount);
-            Span<float> masses = stackalloc float[CollisionOutcomes.MaxFragments];
-            int n = CollisionOutcomes.SplitFragments(debris, m0, budget, masses);
+            Span<float> masses = stackalloc float[CollisionOutcomes.MaxFragmentsPerEvent];
+            int n = CollisionOutcomes.SplitFragments(debris, m0, budget, masses, out int folded);
+            LastFoldedAtCeiling += folded;
             float fragMass = 0f;
             for (int k = 0; k < n; k++) fragMass += masses[k];
             float mr = systemMass - fragMass;
@@ -323,7 +330,8 @@ namespace GravitySimulator.Planets
             Vector3 e1 = Vector3.Normalize(Vector3.Cross(axis, MathF.Abs(axis.X) < 0.9f ? Vector3.UnitX : Vector3.UnitY));
             Vector3 e2 = Vector3.Cross(axis, e1);
             const float CosHalfAngle = 0.70710678f; // 45-degree cone
-            float plusMass = 0f, minusMass = 0f, plusReach = rr, minusReach = rr;
+            float plusMass = 0f, minusMass = 0f;
+            int first = _fragCount;
             Vector3 sumOffset = Vector3.Zero, sumMomentum = Vector3.Zero;
             for (int k = 0; k < n; k++)
             {
@@ -332,14 +340,11 @@ namespace GravitySimulator.Planets
                 float cosT = 1f - NextFloat() * (1f - CosHalfAngle), sinT = MathF.Sqrt(MathF.Max(0f, 1f - cosT * cosT));
                 float phi = NextFloat() * MathF.Tau;
                 Vector3 dir = (plus ? axis : -axis) * cosT + (e1 * MathF.Cos(phi) + e2 * MathF.Sin(phi)) * sinT;
-                // Stack outward on each side: |p_k - p_j| >= |p_k| - |p_j| keeps one side's fragments apart,
-                // and the two cones are at least 90 degrees apart.
-                float dist = ((plus ? plusReach : minusReach) + r) * 1.001f;
-                if (obstacle >= 0) dist = ClearObstacle(ps, obstacle, x, dir, dist, r);
-                if (plus) { plusMass += m; plusReach = dist + r; }
-                else { minusMass += m; minusReach = dist + r; }
+                float dist = ClearPlaced(ps, obstacle, x, dir, (rr + r) * 1.001f, r, first);
+                if (plus) plusMass += m;
+                else minusMass += m;
                 Vector3 offset = dir * dist;
-                Vector3 u = dir * (vEsc * (1.05f + 0.25f * NextFloat()));
+                Vector3 u = dir * (vEsc * FragmentSpeedFactor(masses[0], m, NextFloat()));
                 int f = _fragCount++;
                 _fragPos[f] = offset; // relative to x until the shift below
                 _fragVel[f] = u;      // relative to v
@@ -360,19 +365,46 @@ namespace GravitySimulator.Planets
             LastFragments += n;
         }
 
-        // Pushes a fragment further out along its direction until it clears the obstacle (the hit-and-run target).
-        private static float ClearObstacle(ParticleSystem ps, int obstacle, Vector3 x, Vector3 dir, float dist, float r)
+        /// <summary>
+        /// Fragment launch speed in units of the remnant's escape speed: 1.05 (m_k / m_1)^(-1/6) plus a
+        /// 0-0.2 random spread, capped at 2. Just above escape for the largest fragment, smaller fragments
+        /// faster, following the weak v ~ m^(-1/6) mass dependence of laboratory disruption experiments
+        /// (Nakamura &amp; Fujiwara 1991, Icarus 92, 132). The 64-fragment split spans m_1/m_64 ~ 80, so the
+        /// smallest leave at the cap of 2 V_esc.
+        /// </summary>
+        public static float FragmentSpeedFactor(float largestMass, float mass, float random01)
         {
-            Vector3 c = ps.Position[obstacle] - x;
-            float clear = ps.Radius[obstacle] + r;
-            // |dir s - c| < clear for s in (s1, s2): roots of s^2 - 2 s (dir.c) + |c|^2 - clear^2.
-            float bc = Vector3.Dot(dir, c), disc = bc * bc - (c.LengthSquared() - clear * clear);
-            if (disc > 0f)
+            float ratio = mass > 0f && largestMass > mass ? largestMass / mass : 1f;
+            return MathF.Min(MaxFragmentSpeed, MinFragmentSpeed * MathF.Pow(ratio, 1f / 6f) + 0.2f * random01);
+        }
+
+        /// <summary>Fragment speed range, in units of the remnant's escape speed.</summary>
+        public const float MinFragmentSpeed = 1.05f, MaxFragmentSpeed = 2f;
+
+        // Pushes a fragment further out along its direction until it clears the obstacle (the hit-and-run
+        // target) and every fragment of this event placed so far (offsets relative to x until the final shift).
+        // dist only grows and each sphere's interval is passed at most once, so this ends.
+        private float ClearPlaced(ParticleSystem ps, int obstacle, Vector3 x, Vector3 dir, float dist, float r, int first)
+        {
+            bool moved = true;
+            while (moved)
             {
-                float root = MathF.Sqrt(disc);
-                if (dist > bc - root && dist < bc + root) dist = (bc + root) * 1.001f;
+                moved = false;
+                if (obstacle >= 0) moved |= Clear(ps.Position[obstacle] - x, ps.Radius[obstacle] + r, dir, ref dist);
+                for (int f = first; f < _fragCount; f++) moved |= Clear(_fragPos[f], _fragRadius[f] + r, dir, ref dist);
             }
             return dist;
+        }
+
+        // |dir s - c| < clear for s in (s1, s2): roots of s^2 - 2 s (dir.c) + |c|^2 - clear^2. Moves dist past s2.
+        private static bool Clear(Vector3 c, float clear, Vector3 dir, ref float dist)
+        {
+            float bc = Vector3.Dot(dir, c), disc = bc * bc - (c.LengthSquared() - clear * clear);
+            if (disc <= 0f) return false;
+            float root = MathF.Sqrt(disc);
+            if (!(dist > bc - root && dist < bc + root)) return false;
+            dist = (bc + root) * 1.001f;
+            return true;
         }
 
         private static float RadiusOf(float mass, float rho) => MathF.Cbrt(3f * mass / (4f * MathF.PI * rho));

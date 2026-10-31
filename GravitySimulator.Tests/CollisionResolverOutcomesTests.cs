@@ -114,20 +114,35 @@ public class CollisionResolverOutcomesTests
     }
 
     [Fact]
-    public void Disruption_AtMost8Fragments_NoneBelowM0_Conserved()
+    public void Disruption_AtMostTheCap_NoneBelowTheMinimum_Conserved()
     {
         var ps = Contact(vi: 10f, b: 0f);
         var before = Totals(ps);
-        var res = Outcomes(m0: 0.001f);
+        var res = Outcomes(maxBodies: 1_000, m0: 0.001f);
 
         res.Resolve(ps);
 
         Assert.Equal(1, res.LastDisruptions);
-        Assert.Equal(8, res.LastFragments);
-        Assert.Equal(9, ps.Count);
+        Assert.Equal(CollisionOutcomes.MaxFragmentsPerEvent, res.LastFragments);
+        Assert.Equal(0, res.LastFoldedAtCeiling);
+        Assert.Equal(1 + CollisionOutcomes.MaxFragmentsPerEvent, ps.Count);
         Assert.True(ps.Mass[0] < 0.2f);
         for (int i = 1; i < ps.Count; i++) Assert.True(ps.Mass[i] >= 0.001f, $"fragment {i} mass {ps.Mass[i]}");
         AssertConserved(before, ps, 10f);
+
+        // Speeds relative to the remnant: 1.05-2 x its escape speed, the smallest fragments fastest.
+        float vEsc = MathF.Sqrt(2f * ps.Mass[0] / ps.Radius[0]);
+        float lo = float.MaxValue, hi = 0f;
+        for (int i = 1; i < ps.Count; i++)
+        {
+            float u = (ps.Velocity[i] - ps.Velocity[0]).Length() / vEsc;
+            lo = MathF.Min(lo, u);
+            hi = MathF.Max(hi, u);
+        }
+        Assert.True(lo >= 1.05f * 0.999f && hi <= 2f * 1.001f, $"speeds {lo:F3}-{hi:F3} x V_esc");
+        Assert.True(hi - lo > 0.5f, $"speeds {lo:F3}-{hi:F3} x V_esc: no spread");
+        float uLargest = (ps.Velocity[1] - ps.Velocity[0]).Length() / vEsc, uSmallest = (ps.Velocity[ps.Count - 1] - ps.Velocity[0]).Length() / vEsc;
+        Assert.True(uSmallest > uLargest, $"smallest {uSmallest:F3} not faster than largest {uLargest:F3}");
     }
 
     [Fact]
@@ -175,10 +190,11 @@ public class CollisionResolverOutcomesTests
     public void Fragments_AreBornAfterTheSweep_AndDoNotOverlapEachOtherOrTheRemnant()
     {
         var ps = Contact(vi: 10f, b: 0f);
-        var res = Outcomes(m0: 0.001f);
+        var res = Outcomes(maxBodies: 1_000, m0: 0.001f);
 
         res.Resolve(ps);
 
+        Assert.Equal(CollisionOutcomes.MaxFragmentsPerEvent, res.LastFragments);
         Assert.Equal(1, Events(res)); // the fragments took part in no contact this step
         for (int i = 0; i < ps.Count; i++)
         for (int j = i + 1; j < ps.Count; j++)
@@ -217,6 +233,70 @@ public class CollisionResolverOutcomesTests
         Assert.Equal(capacity, ps.Capacity); // no growth
         for (int i = 0; i < ps.Count; i++) Assert.True(ps.Mass[i] >= 0.001f, $"body {i} mass {ps.Mass[i]}");
         AssertConserved(before, ps, 10f);
+        // Each disruption frees one slot (the pair becomes one remnant), so it gets one fragment and the
+        // other 63 of its 64 are folded at the ceiling.
+        Assert.Equal(pairs, res.LastFragments);
+        Assert.Equal(pairs * (CollisionOutcomes.MaxFragmentsPerEvent - 1), res.LastFoldedAtCeiling);
+    }
+
+    [Fact]
+    public void AboveTheLoadCount_FragmentsStaySeparate_UpToTheCeiling_ThenFold()
+    {
+        const int pairs = 30;
+        ParticleSystem Shower()
+        {
+            var ps = new ParticleSystem(2 * pairs);
+            for (int k = 0; k < pairs; k++)
+            {
+                var one = Contact(vi: 10f, b: 0f);
+                Vector3 shift = new(k * 10f, 0f, 0f);
+                ps.Add(one.Position[0] + shift, one.Velocity[0], one.Mass[0], one.Radius[0]);
+                ps.Add(one.Position[1] + shift, one.Velocity[1], one.Mass[1], one.Radius[1]);
+            }
+            return ps;
+        }
+        // Room for everything: 30 x 64 fragments, nothing folded.
+        var roomy = Shower();
+        var before = Totals(roomy);
+        var res = Outcomes(maxBodies: 10_000, m0: 0.001f);
+        res.Resolve(roomy);
+        Assert.Equal(pairs * CollisionOutcomes.MaxFragmentsPerEvent, res.LastFragments);
+        Assert.Equal(0, res.LastFoldedAtCeiling);
+        Assert.Equal(pairs * (1 + CollisionOutcomes.MaxFragmentsPerEvent), roomy.Count);
+        AssertConserved(before, roomy, 10f);
+
+        // Ceiling 500: the count stops exactly there and the rest is folded and counted.
+        var tight = Shower();
+        before = Totals(tight);
+        res = Outcomes(maxBodies: 500, m0: 0.001f);
+        res.Resolve(tight);
+        Assert.Equal(500, tight.Count);
+        Assert.Equal(500 - pairs, res.LastFragments);
+        Assert.Equal(pairs * CollisionOutcomes.MaxFragmentsPerEvent - res.LastFragments, res.LastFoldedAtCeiling);
+        Assert.True(tight.Capacity <= 500, $"capacity {tight.Capacity} grew past the ceiling");
+        for (int i = 0; i < tight.Count; i++) Assert.True(tight.Mass[i] >= 0.001f, $"body {i} mass {tight.Mass[i]}");
+        AssertConserved(before, tight, 10f);
+    }
+
+    [Theory]
+    [InlineData(3f, 0f)]
+    [InlineData(6f, 0f)]
+    [InlineData(10f, 0f)]
+    [InlineData(20f, 0.3f)]
+    [InlineData(8f, 0.8f)]   // hit-and-run: the projectile sheds the fragments
+    public void ManyFragments_ConserveMassMomentumCom(float vi, float b)
+    {
+        var ps = Contact(vi: vi, b: b);
+        var before = Totals(ps);
+        var res = Outcomes(maxBodies: 1_000, m0: 0.0005f);
+
+        res.Resolve(ps);
+
+        Assert.True(res.LastFragments > 8, $"only {res.LastFragments} fragments");
+        Assert.True(res.LastFragments <= CollisionOutcomes.MaxFragmentsPerEvent);
+        Assert.Equal(0, res.LastFoldedAtCeiling);
+        for (int i = 0; i < ps.Count; i++) Assert.True(ps.Mass[i] >= 0.0005f, $"body {i} mass {ps.Mass[i]}");
+        AssertConserved(before, ps, vi);
     }
 
     [Fact]
@@ -261,5 +341,79 @@ public class CollisionResolverOutcomesTests
         Assert.Equal(1, ps.Count);
         Assert.Equal(1, res.LastMerges);
         Assert.Equal(BodyClass.BlackHole, ps.Class[0]);
+    }
+    // ---- PlanetSimulation wiring: minimum fragment mass and the live-count ceiling -------------
+
+    // pairs head-on disrupting pairs (equal unit masses, 10 apart), plus one far grain of mass m0 that sets
+    // the load-time grain mass.
+    private static ParticleSystem SimShower(int pairs, float m0)
+    {
+        var ps = new ParticleSystem(2 * pairs + 1);
+        for (int k = 0; k < pairs; k++)
+        {
+            var one = Contact(vi: 10f, b: 0f);
+            Vector3 shift = new(k * 10f, 0f, 0f);
+            ps.Add(one.Position[0] + shift, one.Velocity[0], one.Mass[0], one.Radius[0]);
+            ps.Add(one.Position[1] + shift, one.Velocity[1], one.Mass[1], one.Radius[1]);
+        }
+        ps.Add(new Vector3(0f, 500f, 0f), Vector3.Zero, m0, RadiusAtDensity(m0));
+        return ps;
+    }
+
+    [Fact]
+    public void Simulation_MinimumFragmentMass_IsAQuarterGrain()
+    {
+        const float m0 = 0.01f;
+        var sim = new PlanetSimulation(new SimulationParameters { EscapeRadius = 1e6f });
+        sim.Load(SimShower(1, m0));
+
+        sim.Step();
+
+        Assert.Equal(0.25f, CollisionOutcomes.MinFragmentGrainFraction);
+        Assert.Equal(1, sim.Stats.Disruptions);
+        var ps = sim.Particles;
+        float lightest = float.MaxValue;
+        for (int i = 0; i < ps.Count; i++) lightest = MathF.Min(lightest, ps.Mass[i]);
+        Assert.True(lightest >= m0 * 0.25f * 0.9999f, $"lightest body {lightest} below m0/4");
+        Assert.True(lightest < m0, $"lightest body {lightest}: no fragment below a grain");
+    }
+
+    [Fact]
+    public void Simulation_CeilingHoldsUnderAShower_AndFoldedFragmentsAreCounted()
+    {
+        const int pairs = 30, ceiling = 200;
+        var sim = new PlanetSimulation(new SimulationParameters { EscapeRadius = 1e6f, MaxLiveParticles = ceiling });
+        sim.Load(SimShower(pairs, 0.001f));
+        Assert.Equal(ceiling, sim.LiveParticleCeiling);
+
+        sim.Step();
+
+        var s = sim.Stats;
+        Assert.Equal(pairs, s.Disruptions);
+        Assert.Equal(ceiling, s.Count);
+        Assert.Equal(ceiling - (pairs + 1), s.FragmentsCreated);
+        Assert.Equal(pairs * CollisionOutcomes.MaxFragmentsPerEvent, s.FragmentsCreated + s.FragmentsFoldedAtCeiling);
+        Assert.True(s.FragmentsFoldedAtCeiling > 0);
+    }
+
+    [Fact]
+    public void Simulation_EffectiveCeiling_IsTheLargerOfTheConstantAndTheLoadCount()
+    {
+        Assert.Equal(100_000, SimulationParameters.DefaultMaxLiveParticles);
+        Assert.Equal(SimulationParameters.DefaultMaxLiveParticles, new SimulationParameters().MaxLiveParticles);
+
+        var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 100 });
+        sim.Load(Presets.DiscAroundStar(50, seed: 1));
+        Assert.Equal(100, sim.LiveParticleCeiling);
+        sim.Load(Presets.DiscAroundStar(150, seed: 1));
+        Assert.Equal(150, sim.LiveParticleCeiling);
+
+        // A load above the ceiling still runs, and fragments never take it past the load count.
+        var big = new PlanetSimulation(new SimulationParameters { EscapeRadius = 1e6f, MaxLiveParticles = 10 });
+        big.Load(SimShower(30, 0.001f));
+        Assert.Equal(61, big.LiveParticleCeiling);
+        big.Step();
+        Assert.Equal(61, big.Stats.Count);
+        Assert.Equal(30, big.Stats.FragmentsCreated);
     }
 }
