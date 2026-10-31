@@ -9,7 +9,7 @@ namespace GravitySimulator.Planets
     /// <summary>Tunables for <see cref="PlanetSimulation"/>. Normalised units (G = 1).</summary>
     public sealed class SimulationParameters
     {
-        public float TimeStep { get; set; } = 0.004f;
+        public float TimeStep { get; set; } = 0.01f; // ~160 steps per orbit at the disc inner edge
         public float TimeScale { get; set; } = 1f;
         public float Theta { get; set; } = 0.6f;
         public float Softening { get; set; } = 0.005f;
