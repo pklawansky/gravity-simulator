@@ -80,6 +80,30 @@ namespace GravitySimulator.Planets
         /// <summary>Resolves all current contacts, then compacts away merged-out bodies.</summary>
         public void Resolve(ParticleSystem ps)
         {
+            _candidates = null;
+            ResolveCore(ps);
+        }
+
+        /// <summary>
+        /// As <see cref="Resolve(ParticleSystem)"/>, with the broad phase done elsewhere (the GPU, see
+        /// <see cref="GpuGravity.LastContactPairs"/>): <paramref name="candidates"/> holds <paramref name="count"/>
+        /// pairs (i, j) at [2k], [2k + 1], a superset of the touching pairs, possibly repeated. Each is re-tested
+        /// with the exact contact test of the CPU broad phase, then sorted and de-duplicated, so the pairs resolved,
+        /// and their order, are the ones <see cref="Resolve(ParticleSystem)"/> would find.
+        /// </summary>
+        public void Resolve(ParticleSystem ps, uint[] candidates, int count)
+        {
+            _candidates = candidates ?? Array.Empty<uint>();
+            _candidateCount = count;
+            ResolveCore(ps);
+            _candidates = null;
+        }
+
+        private uint[] _candidates;
+        private int _candidateCount;
+
+        private void ResolveCore(ParticleSystem ps)
+        {
             LastMerges = 0;
             LastBounces = 0;
             LastBlackHoleMergers = 0;
@@ -93,7 +117,7 @@ namespace GravitySimulator.Planets
             _ceiling = MaxBodies > 0 ? MaxBodies : n;
 
             long t0 = Stopwatch.GetTimestamp();
-            int pairs = Detect(ps);
+            int pairs = _candidates != null ? FromCandidates(ps, _candidates, _candidateCount) : Detect(ps);
             long t1 = Stopwatch.GetTimestamp();
 
             // Sequential, in (lower index, higher index) order: resolution mutates bodies and draws random numbers.
@@ -134,6 +158,42 @@ namespace GravitySimulator.Planets
             var list = new List<(int, int)>(count);
             for (int k = 0; k < count; k++) list.Add(((int)(_pairs[k] >> 32), (int)(_pairs[k] & 0xFFFFFFFF)));
             return list;
+        }
+
+        /// <summary>
+        /// The touching pairs among <paramref name="count"/> candidate pairs (see
+        /// <see cref="Resolve(ParticleSystem, uint[], int)"/>), as <see cref="FindContacts(ParticleSystem)"/> returns them.
+        /// </summary>
+        public List<(int A, int B)> FindContacts(ParticleSystem ps, uint[] candidates, int count)
+        {
+            int found = ps.Count < 2 ? 0 : FromCandidates(ps, candidates, count);
+            var list = new List<(int, int)>(found);
+            for (int k = 0; k < found; k++) list.Add(((int)(_pairs[k] >> 32), (int)(_pairs[k] & 0xFFFFFFFF)));
+            return list;
+        }
+
+        // Exact re-test of external candidates (live bodies, Touching), then the same sort and de-duplication as Detect.
+        private int FromCandidates(ParticleSystem ps, uint[] cand, int count)
+        {
+            int n = ps.Count;
+            if (_pairs.Length < count) _pairs = new long[Math.Max(count, 2 * _pairs.Length)];
+            Vector3[] pos = ps.Position;
+            float[] rad = ps.Radius, mass = ps.Mass;
+            int total = 0;
+            for (int k = 0; k < count; k++)
+            {
+                uint a = cand[2 * k], b = cand[2 * k + 1];
+                if (a >= (uint)n || b >= (uint)n || a == b) continue;
+                int i = (int)Math.Min(a, b), j = (int)Math.Max(a, b);
+                if (mass[i] <= 0f || mass[j] <= 0f || !Touching(pos[i], rad[i], pos[j], rad[j])) continue;
+                _pairs[total++] = ((long)i << 32) | (uint)j;
+            }
+            LastPairTests = count;
+            Array.Sort(_pairs, 0, total);
+            int unique = 0;
+            for (int k = 0; k < total; k++)
+                if (unique == 0 || _pairs[k] != _pairs[unique - 1]) _pairs[unique++] = _pairs[k];
+            return unique;
         }
 
         // ---- broad phase: hierarchical spatial hash -------------------------------------------------

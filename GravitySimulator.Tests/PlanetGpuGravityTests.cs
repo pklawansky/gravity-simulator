@@ -121,6 +121,64 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The GPU broad phase (uniform grid per size level) on the brute-force contact-set test of the CPU one
+    /// (CollisionBroadPhaseTests: grains, clumps over four decades of radius, a star-sized body, clusters, dead
+    /// bodies): after the CPU re-test, sort and de-duplication, its pairs, mapped back through the Morton order,
+    /// must be exactly the O(n^2) set; and in the reordered state they must equal the CPU broad phase's pairs,
+    /// in the same (lower, higher) order.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(1, 3000)]
+    [InlineData(2, 5000)]
+    [InlineData(3, 8000)]
+    [InlineData(4, 300)]
+    public void GpuContacts_MatchBruteForce_OnRandomMixedSizeStates(int seed, int count)
+    {
+        using var gpu = Gpu();
+        var ps = CollisionBroadPhaseTests.MixedState(seed, count);
+        if (seed == 3) for (int i = 7; i < ps.Count; i += 97) ps.Mass[i] = 0f; // dead bodies never pair
+        var expected = CollisionBroadPhaseTests.BruteForce(ps);
+        Assert.True(expected.Count > 50, $"only {expected.Count} contacts");
+
+        gpu.Compute(ps, 0.6f, Softening, contacts: true);
+        int[] order = gpu.LastOrder.Take(ps.Count).ToArray();
+        var reordered = ps.Clone();
+        reordered.Reorder(order, new ParticleSystem(reordered.Capacity));
+        var resolver = new CollisionResolver();
+        var gpuPairs = resolver.FindContacts(reordered, gpu.LastContactPairs, gpu.LastContactCount);
+        output.WriteLine($"seed {seed}: {expected.Count} contacts, {gpu.LastContactCount} GPU candidates, {gpuPairs.Count} after the re-test");
+
+        // Same pairs as the CPU broad phase on the reordered state, in the same order.
+        Assert.Equal(new CollisionResolver().FindContacts(reordered), gpuPairs);
+        // And, mapped back to the original indices, exactly the brute-force set.
+        var mapped = gpuPairs.Select(p => (Math.Min(order[p.A], order[p.B]), Math.Max(order[p.A], order[p.B]))).OrderBy(p => p).ToList();
+        Assert.Equal(expected, mapped);
+    }
+
+    /// <summary>
+    /// More candidate pairs than the first pair buffer holds (a 30^3 lattice of touching bodies, about 78,000
+    /// pairs): the broad phase must grow its buffer and run again, giving the CPU broad phase's pairs.
+    /// </summary>
+    [SkippableFact]
+    public void GpuContacts_PairBufferOverflow_GrowsAndReruns()
+    {
+        using var gpu = Gpu();
+        var ps = new ParticleSystem(27_000);
+        for (int z = 0; z < 30; z++)
+        for (int y = 0; y < 30; y++)
+        for (int x = 0; x < 30; x++)
+            ps.Add(new Vector3(x, y, z) * 0.1f, Vector3.Zero, 1e-5f, 0.055f);
+        gpu.Compute(ps, 0.6f, Softening, contacts: true);
+        var reordered = ps.Clone();
+        reordered.Reorder(gpu.LastOrder.Take(ps.Count).ToArray(), new ParticleSystem(reordered.Capacity));
+        var gpuPairs = new CollisionResolver().FindContacts(reordered, gpu.LastContactPairs, gpu.LastContactCount);
+        var cpuPairs = new CollisionResolver().FindContacts(reordered);
+        output.WriteLine($"lattice: {cpuPairs.Count} contacts, {gpu.LastContactCount} GPU candidates");
+        Assert.True(cpuPairs.Count > 1 << 16, $"only {cpuPairs.Count} contacts: the case must overflow the first pair buffer");
+        Assert.Equal(cpuPairs, gpuPairs);
+    }
+
+    /// <summary>
     /// Near-coincident pairs at leaf capacity 1 give long single-child chains, far more nodes than the first
     /// guess at the node buffers: the build must flag the overflow, grow and rebuild, and still give the CPU
     /// tree's forces (same tree), with no corruption carried over into a later, smaller build.

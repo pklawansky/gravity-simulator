@@ -117,6 +117,11 @@ namespace GravitySimulator.Planets
         public double CollisionDetect { get; init; }
         public double CollisionResolve { get; init; }
         public double CollisionCompact { get; init; }
+        /// <summary>
+        /// GPU path with GPU contacts: the broad phase on the GPU (inside <see cref="GpuWalk"/>); <see cref="CollisionDetect"/>
+        /// is then only the CPU re-test, sort and de-duplication of the candidates.
+        /// </summary>
+        public double GpuBroadPhase { get; init; }
         /// <summary>Body evolution, escape removal and the snapshot publish.</summary>
         public double Rest { get; init; }
         public double Total => KickDrift + TreeBuild + Gravity + Collisions + Rest;
@@ -324,7 +329,9 @@ namespace GravitySimulator.Planets
             long t1 = Stopwatch.GetTimestamp();
             if (_gpu == null) BuildTree();    // the GPU backend builds its own tree
             long t2 = Stopwatch.GetTimestamp();
-            ForcesAndKick();                  // a = F(x) ; v += a dt/2
+            _wantContacts = GpuContacts;
+            ForcesAndKick();                  // a = F(x) ; v += a dt/2 (GPU: also the contact candidates)
+            _wantContacts = false;
             long t3 = Stopwatch.GetTimestamp();
 
             _collisions.MergeThreshold = _p.MergeThreshold;
@@ -332,7 +339,9 @@ namespace GravitySimulator.Planets
             _collisions.Model = _p.CollisionModel;
             _collisions.MaxBodies = LiveParticleCeiling;
             _collisions.MinFragmentMass = _grainMass * CollisionOutcomes.MinFragmentGrainFraction;
-            _collisions.Resolve(_ps);
+            // GPU path: the broad phase ran on the GPU with gravity, on these positions in this (reordered) order.
+            if (_lastGpu && _lastGpuContacts) _collisions.Resolve(_ps, _gpu.LastContactPairs, _gpu.LastContactCount);
+            else _collisions.Resolve(_ps);
             _partialAccretions += _collisions.LastPartialAccretions;
             _hitAndRuns += _collisions.LastHitAndRuns;
             _erosions += _collisions.LastErosions;
@@ -384,6 +393,7 @@ namespace GravitySimulator.Planets
                 Reorder = _lastGpu ? _lastReorderMs : 0,
                 Collisions = Ms(t3, t4),
                 CollisionDetect = _collisions.LastDetectMs,
+                GpuBroadPhase = _lastGpu && _lastGpuContacts ? _gpu?.LastBroadPhaseMs ?? 0 : 0,
                 CollisionResolve = _collisions.LastResolveMs,
                 CollisionCompact = _collisions.LastCompactMs,
                 Rest = Ms(t4, t5),
@@ -395,6 +405,13 @@ namespace GravitySimulator.Planets
         private double _lastReorderMs;
 
         private bool _treeStale; // the CPU tree does not match the state (the GPU backend skipped it)
+        private bool _wantContacts, _lastGpuContacts;
+
+        /// <summary>
+        /// GPU backend: run the collision broad phase on the GPU with gravity (on by default); the CPU still re-tests,
+        /// orders and resolves the pairs. Off: the CPU broad phase, as on the CPU backend.
+        /// </summary>
+        public bool GpuContacts { get; set; } = true;
 
         private void BuildTree()
         {
@@ -441,7 +458,8 @@ namespace GravitySimulator.Planets
         {
             try
             {
-                _gpu.Compute(_ps, _p.Theta, _p.Softening);
+                _gpu.Compute(_ps, _p.Theta, _p.Softening, _wantContacts);
+                _lastGpuContacts = _wantContacts;
                 _treeStale = true;
                 return true;
             }

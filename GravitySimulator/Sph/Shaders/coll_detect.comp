@@ -1,0 +1,100 @@
+// Collision broad phase, step 5: candidate touching pairs, CollisionResolver's search on the GPU. Each live
+// body scans its own cell (bodies of higher index) and the 13 forward neighbours on its own level; on every
+// coarser occupied level, the cells within its radius plus that level's largest radius, or the level's whole
+// list when it holds at most 16 bodies. A pair is emitted as (lower, higher) when the centres are closer than
+// the summed radii with a relative slack of uSlack on the squared distance, so float differences can only add
+// candidates; the CPU re-tests each one exactly, sorts and de-duplicates (hash collisions can repeat a pair).
+// pairs[0] = candidates found (may exceed uPairCap: the host grows the buffer and runs again).
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer Body { vec4 body[]; };
+layout(std430, binding = 1) readonly buffer Rad { float rad[]; };
+layout(std430, binding = 2) readonly buffer Lvl { uint lvl[]; };
+layout(std430, binding = 3) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 4) readonly buffer CellIdx { uint cellIdx[]; };   // body | level << 26
+layout(std430, binding = 5) readonly buffer Info { uint info[]; };
+layout(std430, binding = 6) readonly buffer ByLevel { uint byLevel[]; };
+layout(std430, binding = 7) buffer Pairs { uint pairs[]; };
+uniform float uC0;
+uniform uint uPairCap;
+uniform float uSlack;
+
+const ivec3 STENCIL[14] = ivec3[14](
+    ivec3(0, 0, 0),
+    ivec3(1, 0, 0),
+    ivec3(-1, 1, 0), ivec3(0, 1, 0), ivec3(1, 1, 0),
+    ivec3(-1, -1, 1), ivec3(0, -1, 1), ivec3(1, -1, 1),
+    ivec3(-1, 0, 1), ivec3(0, 0, 1), ivec3(1, 0, 1),
+    ivec3(-1, 1, 1), ivec3(0, 1, 1), ivec3(1, 1, 1));
+
+uint bucketOf(ivec3 c, uint l)
+{
+    return ((uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u) ^ (uint(c.z) * 83492791u) ^ (l * 1640531527u)) & uTableMask;
+}
+
+ivec3 cellAt(vec3 p, float inv)
+{
+    return ivec3(clamp(floor(p * inv), vec3(-1073741824.0), vec3(1073741823.0)));
+}
+
+void test(uint i, vec3 p, float r, uint j)
+{
+    vec3 d = body[j].xyz - p;
+    float rs = r + rad[j];
+    if (dot(d, d) < rs * rs * uSlack)
+    {
+        uint k = atomicAdd(pairs[0], 1u);
+        if (k < uPairCap)
+        {
+            pairs[2u + 2u * k] = min(i, j);
+            pairs[3u + 2u * k] = max(i, j);
+        }
+    }
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    uint l = lvl[i];
+    if (l == 0xFFFFFFFFu) return;
+    vec3 p = body[i].xyz;
+    float r = rad[i];
+
+    ivec3 c = cellAt(p, 1.0 / (uC0 * exp2(float(l))));
+    for (int s = 0; s < 14; s++)
+    {
+        uint h = bucketOf(c + STENCIL[s], l);
+        for (uint k = cellStart[h], e = cellStart[h + 1u]; k < e; k++)
+        {
+            uint e2 = cellIdx[k], j = e2 & 0x3FFFFFFu;
+            if (j == i || (s == 0 && j < i) || (e2 >> 26) != l) continue;
+            test(i, p, r, j);
+        }
+    }
+
+    uint top = info[192];
+    for (uint m = l + 1u; m <= top; m++)
+    {
+        uint lc = info[m];
+        if (lc == 0u) continue;
+        if (lc <= 16u)
+        {
+            for (uint k = info[96u + m], e = k + lc; k < e; k++) test(i, p, r, byLevel[k]);
+            continue;
+        }
+        float im = 1.0 / (uC0 * exp2(float(m)));
+        float reach = (r + uintBitsToFloat(info[48u + m])) * 1.001;
+        ivec3 lo = cellAt(p - vec3(reach), im), hi = cellAt(p + vec3(reach), im);
+        for (int z = lo.z; z <= hi.z; z++)
+        for (int y = lo.y; y <= hi.y; y++)
+        for (int x = lo.x; x <= hi.x; x++)
+        {
+            uint h = bucketOf(ivec3(x, y, z), m);
+            for (uint k = cellStart[h], e = cellStart[h + 1u]; k < e; k++)
+            {
+                uint e2 = cellIdx[k];
+                if ((e2 >> 26) == m) test(i, p, r, e2 & 0x3FFFFFFu);
+            }
+        }
+    }
+}

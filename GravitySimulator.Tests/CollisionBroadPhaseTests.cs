@@ -11,7 +11,7 @@ public class CollisionBroadPhaseTests
 {
     // Mixed sizes: grains, clumps over four decades of radius (well over 64 of them far above the mean),
     // one star-sized body, and tight clusters so that many pairs overlap.
-    private static ParticleSystem MixedState(int seed, int count)
+    internal static ParticleSystem MixedState(int seed, int count)
     {
         var rng = new Random(seed);
         var ps = new ParticleSystem(count + 1);
@@ -37,7 +37,7 @@ public class CollisionBroadPhaseTests
         return ps;
     }
 
-    private static List<(int, int)> BruteForce(ParticleSystem ps)
+    internal static List<(int, int)> BruteForce(ParticleSystem ps)
     {
         var pairs = new List<(int, int)>();
         for (int i = 0; i < ps.Count; i++)

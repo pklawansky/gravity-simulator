@@ -51,14 +51,21 @@ namespace GravitySimulator.Planets
         // GL-thread state.
         private HeadlessGlContext _ctx;
         private GlProgram _walk, _keys, _radixCount, _radixScatter, _gather, _split, _advance, _moments, _count, _emit,
-            _scanLocal, _scanAdd, _clear;
+            _scanLocal, _scanAdd, _clear, _cLevel, _cLevels, _cHash, _cPermute, _cDetect;
         private int _bodyIn, _bodySorted, _accBuf, _hiA, _loA, _valA, _hiB, _loB, _valB, _hist, _histScan, _blockSums,
             _cnt, _base, _lmin, _nInfo, _nGeom, _nMom, _nodes, _ctrl, _args, _scanTotal;
-        private int _particleCapacity, _nodeCapacity;
+        // Collision broad phase.
+        private int _radIn, _radSorted, _lvl, _cKey, _cRank, _cCount, _cStart, _cIdx, _byLevel, _info, _pairs;
+        private int _particleCapacity, _nodeCapacity, _tableSize, _pairCapacity;
 
         // CPU staging.
         private int[] _order = Array.Empty<int>();
-        private float[] _pos = Array.Empty<float>(), _acc = Array.Empty<float>();
+        private float[] _pos = Array.Empty<float>(), _acc = Array.Empty<float>(), _rad = Array.Empty<float>();
+        private uint[] _pairsOut = new uint[2];
+        private readonly uint[] _pairHead = new uint[1];
+        private const int InfoWords = 193;
+        /// <summary>Relative slack on the squared contact distance of the GPU candidate test (the CPU re-tests exactly).</summary>
+        private const float ContactSlack = 1.0001f;
         private readonly uint[] _ctrlOut = new uint[2];
         private readonly Stopwatch _clock = new Stopwatch();
 
@@ -84,6 +91,17 @@ namespace GravitySimulator.Planets
         public int[] LastOrder => _order;
         /// <summary>CPU time of the last <see cref="Compute"/> scattering the accelerations back (ms).</summary>
         public double LastScatterMs { get; private set; }
+        /// <summary>Of <see cref="LastGpuMs"/>: the collision broad phase, when it ran (ms).</summary>
+        public double LastBroadPhaseMs { get; private set; }
+        /// <summary>
+        /// When the last <see cref="Compute"/> was asked for contacts: candidate touching pairs, (lower, higher) at
+        /// [2k], [2k + 1] for k below <see cref="LastContactCount"/>, as indices into the Morton order
+        /// (<see cref="LastOrder"/>), i.e. into the bodies once reordered by it. A superset of the touching pairs
+        /// (the GPU test has a small slack), possibly with repeats: CollisionResolver re-tests, sorts and
+        /// de-duplicates them. Overwritten by the next call.
+        /// </summary>
+        public uint[] LastContactPairs => _pairsOut;
+        public int LastContactCount { get; private set; }
 
         private GpuGravity()
         {
@@ -137,6 +155,12 @@ namespace GravitySimulator.Planets
                 _scanLocal = GlProgram.Compute("scan_local.comp");
                 _scanAdd = GlProgram.Compute("scan_add.comp");
                 _clear = GlProgram.Compute("clear.comp");
+                _cLevel = GlProgram.Compute("coll_level.comp");
+                _cLevels = GlProgram.Compute("coll_levels.comp");
+                _cHash = GlProgram.Compute("coll_hash.comp");
+                _cPermute = GlProgram.Compute("coll_permute.comp");
+                _cDetect = GlProgram.Compute("coll_detect.comp");
+                _info = NewBuffer(InfoWords * 4);
                 _ctrl = NewBuffer(64 * 4);
                 _args = NewBuffer(22 * 3 * 4);
                 _scanTotal = NewBuffer(16);
@@ -175,14 +199,18 @@ namespace GravitySimulator.Planets
         {
             try
             {
-                foreach (var p in new[] { _walk, _keys, _radixCount, _radixScatter, _gather, _split, _advance, _moments, _count, _emit, _scanLocal, _scanAdd, _clear })
+                foreach (var p in new[] { _walk, _keys, _radixCount, _radixScatter, _gather, _split, _advance, _moments, _count, _emit, _scanLocal, _scanAdd, _clear,
+                                          _cLevel, _cLevels, _cHash, _cPermute, _cDetect })
                     p?.Dispose();
                 foreach (int b in new[] { _bodyIn, _bodySorted, _accBuf, _hiA, _loA, _valA, _hiB, _loB, _valB, _hist, _histScan, _blockSums,
-                                          _cnt, _base, _lmin, _nInfo, _nGeom, _nMom, _nodes, _ctrl, _args, _scanTotal })
+                                          _cnt, _base, _lmin, _nInfo, _nGeom, _nMom, _nodes, _ctrl, _args, _scanTotal,
+                                          _radIn, _radSorted, _lvl, _cKey, _cRank, _cCount, _cStart, _cIdx, _byLevel, _info, _pairs })
                     if (b != 0) GL.DeleteBuffer(b);
             }
             catch { /* context already gone */ }
             _walk = _keys = _radixCount = _radixScatter = _gather = _split = _advance = _moments = _count = _emit = _scanLocal = _scanAdd = _clear = null;
+            _cLevel = _cLevels = _cHash = _cPermute = _cDetect = null;
+            _radIn = _radSorted = _lvl = _cKey = _cRank = _cCount = _cStart = _cIdx = _byLevel = _info = _pairs = 0;
             _bodyIn = _bodySorted = _accBuf = _hiA = _loA = _valA = _hiB = _loB = _valB = _hist = _histScan = _blockSums = 0;
             _cnt = _base = _lmin = _nInfo = _nGeom = _nMom = _nodes = _ctrl = _args = _scanTotal = 0;
             _ctx?.Dispose();
@@ -226,6 +254,23 @@ namespace GravitySimulator.Planets
             Renew(ref _base, (cap + 1) * 4L);
             Renew(ref _lmin, (cap + 1) * 4L);
             Renew(ref _blockSums, ScanGroup * 4L);
+            Renew(ref _radIn, cap * 4L); Renew(ref _radSorted, cap * 4L); Renew(ref _lvl, cap * 4L);
+            Renew(ref _cKey, cap * 4L); Renew(ref _cRank, cap * 4L); Renew(ref _cIdx, cap * 4L); Renew(ref _byLevel, cap * 4L);
+            // Hash table of about 4 buckets per body (at most 2^21, the two-level scan's reach): few bodies of other
+            // cells share a bucket, so most coarse-level lookups find an empty one.
+            _tableSize = 1;
+            while (_tableSize < 4L * cap && _tableSize < 1 << 21) _tableSize <<= 1;
+            if ((_tableSize + 1 + ScanGroup - 1) / ScanGroup > ScanGroup) throw new InvalidOperationException("too many bodies for the two-level scan");
+            Renew(ref _cCount, (_tableSize + 1) * 4L);
+            Renew(ref _cStart, (_tableSize + 1) * 4L);
+            EnsurePairCapacity(Math.Max(1 << 16, cap / 4));
+        }
+
+        private void EnsurePairCapacity(int pairs)
+        {
+            if (pairs <= _pairCapacity) return;
+            _pairCapacity = pairs;
+            Renew(ref _pairs, (2L + 2L * pairs) * 4);
         }
 
         private void EnsureNodeCapacity(int nodes)
@@ -281,30 +326,51 @@ namespace GravitySimulator.Planets
         /// order in <see cref="LastOrder"/>. Massless bodies are in the tree with no mass (they feel gravity and
         /// exert none). Throws on a GL failure (the caller falls back to the CPU tree).
         /// </summary>
-        public void Compute(ParticleSystem ps, float theta, float softening)
+        public void Compute(ParticleSystem ps, float theta, float softening) => Compute(ps, theta, softening, false);
+
+        /// <summary>
+        /// As <see cref="Compute(ParticleSystem, float, float)"/>; with <paramref name="contacts"/> it also runs the
+        /// collision broad phase on the same key-ordered bodies (see <see cref="LastContactPairs"/>).
+        /// </summary>
+        public void Compute(ParticleSystem ps, float theta, float softening, bool contacts)
         {
             int n = ps.Count;
+            LastContactCount = 0;
+            LastBroadPhaseMs = 0;
             if (n == 0) return;
             _clock.Restart();
             Vector4 root = RootCube(ps);
-            if (_pos.Length < n * 4) { _pos = new float[ps.Capacity * 4]; _acc = new float[ps.Capacity * 4]; }
+            if (_pos.Length < n * 4) { _pos = new float[ps.Capacity * 4]; _acc = new float[ps.Capacity * 4]; _rad = new float[ps.Capacity]; }
             if (_order.Length < n) _order = new int[ps.Capacity];
             var x = ps.Position;
-            float[] mass = ps.Mass, pos = _pos;
+            float[] mass = ps.Mass, pos = _pos, radius = ps.Radius, rad = _rad;
+            float rMin = float.MaxValue;
+            object gate = new object();
             For(n, (s, e) =>
             {
+                float lo = float.MaxValue;
                 for (int k = s; k < e; k++)
                 {
                     var p = x[k];
                     int o = k * 4;
                     pos[o] = p.X; pos[o + 1] = p.Y; pos[o + 2] = p.Z; pos[o + 3] = Math.Max(mass[k], 0f);
+                    if (contacts)
+                    {
+                        rad[k] = radius[k];
+                        if (mass[k] > 0f && radius[k] < lo) lo = radius[k];
+                    }
                 }
+                if (contacts) lock (gate) rMin = Math.Min(rMin, lo);
             });
+            contacts &= rMin != float.MaxValue;
+            // The finest cell of CollisionResolver: just over the smallest diameter.
+            float c0 = contacts ? (float)Math.Max(2.002 * rMin, 1e-6) : 0f;
             LastFlattenMs = _clock.Elapsed.TotalMilliseconds;
 
             _clock.Restart();
             int leafCap = Math.Max(1, LeafCapacity);
-            double upload = 0, build = 0, kernel = 0;
+            double upload = 0, build = 0, kernel = 0, broad = 0;
+            int found = 0;
             for (int attempt = 0; ; attempt++)
             {
                 Invoke(() =>
@@ -314,9 +380,14 @@ namespace GravitySimulator.Planets
                     EnsureNodeCapacity(2 * n / leafCap + n / 2 + 4096); // measured: 1.46 n nodes at leaf 1, 0.39 n at 8
                     GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _bodyIn);
                     GL.BufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, n * 16, _pos);
+                    if (contacts)
+                    {
+                        GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _radIn);
+                        GL.BufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, n * 4, _rad);
+                    }
                     GL.Finish();
                     long g1 = Stopwatch.GetTimestamp();
-                    BuildTree(n, root, leafCap);
+                    BuildTree(n, root, leafCap, contacts);
                     GL.Finish();
                     long g2 = Stopwatch.GetTimestamp();
                     var w = _walk;
@@ -338,6 +409,12 @@ namespace GravitySimulator.Planets
                         EnsureNodeCapacity(Math.Max(_nodeCapacity * 2, (int)Math.Min(int.MaxValue / 64, (long)_ctrlOut[0] * 5 / 4)));
                         return; // overflowed: the caller tries again with the larger node buffers
                     }
+                    if (contacts)
+                    {
+                        long b0 = Stopwatch.GetTimestamp();
+                        found = BroadPhase(n, c0);
+                        broad = (Stopwatch.GetTimestamp() - b0) * f;
+                    }
                     GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _accBuf);
                     GL.GetBufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, n * 16, _acc);
                     GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _valA);
@@ -353,7 +430,9 @@ namespace GravitySimulator.Planets
             LastUploadMs = upload;
             LastBuildMs = build;
             LastKernelMs = kernel;
-            LastReadbackMs = Math.Max(0, LastGpuMs - upload - build - kernel);
+            LastBroadPhaseMs = broad;
+            LastContactCount = found;
+            LastReadbackMs = Math.Max(0, LastGpuMs - upload - build - kernel - broad);
 
             _clock.Restart();
             var a = ps.Acceleration;
@@ -380,7 +459,61 @@ namespace GravitySimulator.Planets
         private static void Barrier() =>
             GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit | MemoryBarrierFlags.CommandBarrierBit);
 
-        private void BuildTree(int n, Vector4 root, int leafCap)
+        // Collision broad phase on the key-ordered bodies (GL thread); returns the candidate count, pairs in _pairsOut.
+        private int BroadPhase(int n, float c0)
+        {
+            Clear(_info, InfoWords, 0u);
+            Clear(_cCount, _tableSize + 1, 0u);
+            Barrier();
+            _cLevel.Set("uCount", (uint)n);
+            _cLevel.Set("uC0", c0);
+            Bind(_bodySorted, _radSorted, _lvl, _info);
+            _cLevel.Dispatch(n, 256);
+            Barrier();
+            Bind(_info);
+            GL.UseProgram(_cLevels.Handle);
+            GL.DispatchCompute(1, 1, 1);
+            Barrier();
+            _cHash.Set("uCount", (uint)n);
+            _cHash.Set("uC0", c0);
+            _cHash.Set("uTableMask", (uint)(_tableSize - 1));
+            _cHash.Set("uTableSize", (uint)_tableSize);
+            Bind(_bodySorted, _lvl, _cKey, _cRank, _cCount, _info, _byLevel);
+            _cHash.Dispatch(n, 256);
+            Barrier();
+            Scan(_cCount, _cStart, _tableSize + 1);
+            _cPermute.Set("uCount", (uint)n);
+            _cPermute.Set("uTableSize", (uint)_tableSize);
+            Bind(_cKey, _cRank, _cStart, _cIdx, _lvl);
+            _cPermute.Dispatch(n, 256);
+            Barrier();
+            _cDetect.Set("uCount", (uint)n);
+            _cDetect.Set("uC0", c0);
+            _cDetect.Set("uTableMask", (uint)(_tableSize - 1));
+            _cDetect.Set("uSlack", ContactSlack);
+            for (int attempt = 0; ; attempt++)
+            {
+                Clear(_pairs, 1, 0u);
+                Barrier();
+                _cDetect.Set("uPairCap", (uint)_pairCapacity);
+                Bind(_bodySorted, _radSorted, _lvl, _cStart, _cIdx, _info, _byLevel, _pairs);
+                _cDetect.Dispatch(n, 128);
+                GL.MemoryBarrier(MemoryBarrierFlags.BufferUpdateBarrierBit);
+                GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _pairs);
+                GL.GetBufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, 4, _pairHead);
+                int found = (int)_pairHead[0];
+                if (found <= _pairCapacity)
+                {
+                    if (_pairsOut.Length < 2 * found) _pairsOut = new uint[Math.Max(2 * found, 2 * _pairsOut.Length)];
+                    if (found > 0) GL.GetBufferSubData(BufferTarget.ShaderStorageBuffer, (IntPtr)8, found * 8, _pairsOut);
+                    return found;
+                }
+                if (attempt >= 4) throw new InvalidOperationException("contact pair buffer kept overflowing");
+                EnsurePairCapacity(Math.Max(2 * _pairCapacity, found + found / 4));
+            }
+        }
+
+        private void BuildTree(int n, Vector4 root, int leafCap, bool radii)
         {
             // Keys (and the identity order), then the radix sort: 8 passes on the low word, 8 on the high word.
             _keys.Set("uCount", (uint)n);
@@ -412,7 +545,8 @@ namespace GravitySimulator.Planets
             }
             // 16 passes: the sorted keys and order are back in the A buffers.
             _gather.Set("uCount", (uint)n);
-            Bind(_valA, _bodyIn, _bodySorted);
+            _gather.Set("uWithRadius", radii ? 1u : 0u);
+            Bind(_valA, _bodyIn, _bodySorted, _radIn, _radSorted);
             _gather.Dispatch(n, 256);
 
             // Root node and the level bookkeeping.

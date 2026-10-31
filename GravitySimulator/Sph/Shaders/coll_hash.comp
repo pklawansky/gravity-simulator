@@ -1,0 +1,30 @@
+// Collision broad phase, step 3: each live body's hashed (cell, level) bucket and its rank there (counting
+// sort by atomics, as hash.comp), and its slot in its level's body list. Dead bodies get no bucket.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Body { vec4 body[]; };
+layout(std430, binding = 1) readonly buffer Lvl { uint lvl[]; };
+layout(std430, binding = 2) writeonly buffer Key { uint key[]; };
+layout(std430, binding = 3) writeonly buffer Rank { uint rank[]; };
+layout(std430, binding = 4) buffer Count { uint cellCount[]; };
+layout(std430, binding = 5) buffer Info { uint info[]; };
+layout(std430, binding = 6) writeonly buffer ByLevel { uint byLevel[]; };
+uniform float uC0;
+
+uint bucketOf(ivec3 c, uint l)
+{
+    return ((uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u) ^ (uint(c.z) * 83492791u) ^ (l * 1640531527u)) & uTableMask;
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    uint l = lvl[i];
+    if (l == 0xFFFFFFFFu) { key[i] = uTableSize; return; }
+    float inv = 1.0 / (uC0 * exp2(float(l)));
+    ivec3 c = ivec3(clamp(floor(body[i].xyz * inv), vec3(-1073741824.0), vec3(1073741823.0)));
+    uint h = bucketOf(c, l);
+    key[i] = h;
+    rank[i] = atomicAdd(cellCount[h], 1u);
+    byLevel[info[96u + l] + atomicAdd(info[144u + l], 1u)] = i;
+}

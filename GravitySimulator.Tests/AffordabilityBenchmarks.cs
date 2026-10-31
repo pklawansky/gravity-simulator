@@ -174,15 +174,19 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
     [InlineData(350_000, 4)]
     [InlineData(350_000, 16)]
     [InlineData(350_000, 32)]
-    public void DebrisCloud_GpuProfile(int count, int leafCapacity)
+    [InlineData(150_000, 0, false)]
+    [InlineData(350_000, 0, false)]
+    [InlineData(500_000, 0, false)]
+    public void DebrisCloud_GpuProfile(int count, int leafCapacity, bool gpuContacts = true)
     {
         using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 2_000_000 });
         Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        sim.GpuContacts = gpuContacts;
         if (leafCapacity > 0) sim.GpuLeafCapacity = leafCapacity;
         sim.Load(DebrisCloud(count));
         for (int i = 0; i < 2; i++) sim.Step();
         const int steps = 10;
-        var sum = new double[16];
+        var sum = new double[17];
         long nodes = 0;
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < steps; i++)
@@ -192,15 +196,15 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
             double[] v = { t.KickDrift, t.TreeBuild, t.GpuFlatten, t.GpuTreeBuild, t.GpuUpload, t.GpuKernel, t.GpuReadback,
                            t.GpuScatter, t.Reorder, t.Gravity - t.GpuFlatten - t.GpuWalk - t.GpuScatter - t.Reorder,
                            t.CollisionDetect, t.CollisionResolve, t.CollisionCompact, t.Collisions - t.CollisionDetect - t.CollisionResolve - t.CollisionCompact,
-                           t.Rest, t.Total };
+                           t.Rest, t.Total, t.GpuBroadPhase };
             for (int k = 0; k < v.Length; k++) sum[k] += v[k];
         }
         nodes = sim.LastGpuNodeCount;
         sw.Stop();
         Assert.True(sim.GpuGravityActive, sim.GravityBackend);
         string[] names = { "kick+drift", "CPU tree build", "CPU prep", "GPU tree build", "upload", "GPU walk", "readback", "scatter", "reorder", "gravity other",
-                           "coll broad", "coll resolve", "coll compact", "coll other", "rest", "total" };
-        output.WriteLine($"profile GPU {count} leaf {sim.GpuLeafCapacity}: live {sim.Particles.Count}, nodes {nodes}, wall {sw.Elapsed.TotalMilliseconds / steps:F1} ms/step; " +
+                           "coll broad (CPU)", "coll resolve", "coll compact", "coll other", "rest", "total", "of GPU walk: GPU broad phase" };
+        output.WriteLine($"profile GPU {count} leaf {sim.GpuLeafCapacity} contacts {(gpuContacts ? "GPU" : "CPU")}: live {sim.Particles.Count}, nodes {nodes}, wall {sw.Elapsed.TotalMilliseconds / steps:F1} ms/step; " +
                          string.Join(", ", names.Select((nm, k) => $"{nm} {sum[k] / steps:F1}")));
     }
 
