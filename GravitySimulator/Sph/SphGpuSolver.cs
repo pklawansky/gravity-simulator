@@ -144,6 +144,8 @@ namespace GravitySimulator.Sph
         public SphPhaseTimes Times { get; private set; }
         /// <summary>Enables the GL timestamp queries (small cost: they are read at the end of the step).</summary>
         public bool MeasurePhases { get; set; } = true;
+        /// <summary>Velocity factor applied after each closing kick (1 = none; below 1 to relax initial conditions).</summary>
+        public float Damping { get; set; } = 1f;
 
         // Buffers for rendering (current order): xyz + h, (rho, P, c, balsara), (mass, id).
         public int PositionBuffer => _posH.Front;
@@ -656,6 +658,7 @@ namespace GravitySimulator.Sph
             p.Set("uCourant", _p.Courant * _p.TimeScale);
             p.Set("uAlpha", _p.Alpha);
             p.Set("uBeta", _p.Beta);
+            p.Set("uDamping", Damping);
             Bind(_vel.Front, accFront ? _acc.Front : _acc.Back, _posH.Front, _rhoP, _extra, _ctrl, _massId.Front);
             p.Dispatch(Count, WG);
             Barrier();
