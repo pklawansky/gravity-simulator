@@ -13,11 +13,13 @@ namespace GravitySimulator.Tests;
 public class PerfBenchmarks(ITestOutputHelper output)
 {
     [Theory]
-    [InlineData(50_000)]
-    [InlineData(100_000)]
-    public void DiscPreset_StepsPerSecond(int count)
+    [InlineData(50_000, CollisionModel.Outcomes)]
+    [InlineData(100_000, CollisionModel.Outcomes)]
+    [InlineData(50_000, CollisionModel.MergeOrBounce)]
+    [InlineData(100_000, CollisionModel.MergeOrBounce)]
+    public void DiscPreset_StepsPerSecond(int count, CollisionModel model)
     {
-        var sim = new PlanetSimulation(new SimulationParameters());
+        var sim = new PlanetSimulation(new SimulationParameters { CollisionModel = model });
         sim.Load(Presets.DiscAroundStar(count, seed: 1));
         for (int i = 0; i < 5; i++) sim.Step(); // warm-up (JIT, pools)
 
@@ -28,11 +30,69 @@ public class PerfBenchmarks(ITestOutputHelper output)
         sw.Stop();
         double rate = steps / sw.Elapsed.TotalSeconds;
 
-        output.WriteLine($"disc {count}: {rate:F1} steps/s over {steps} steps " +
+        output.WriteLine($"disc {count} {model}: {rate:F1} steps/s over {steps} steps " +
                          $"({sw.Elapsed.TotalMilliseconds / steps:F1} ms/step), count now {sim.Particles.Count}, " +
                          $"merges {sim.Stats.Merges}, bounces {sim.Stats.Bounces}, gen0 GCs {GC.CollectionCount(0) - gen0}, " +
                          $"cores {Environment.ProcessorCount}");
         Assert.True(rate > 0);
+    }
+
+    /// <summary>
+    /// The UI's default disc (10% of the star) after a warm-up, so the timing is steady state rather
+    /// than the first-contact burst; reports both collision models.
+    /// </summary>
+    [Theory]
+    [InlineData(100_000, CollisionModel.Outcomes)]
+    [InlineData(100_000, CollisionModel.MergeOrBounce)]
+    public void Disc10Percent_SteadyStateStepsPerSecond(int count, CollisionModel model)
+    {
+        var sim = new PlanetSimulation(new SimulationParameters { CollisionModel = model });
+        sim.Load(Presets.DiscAroundStar(count, seed: 1, discMassFraction: 0.1f));
+        for (int i = 0; i < 150; i++) sim.Step();
+
+        const int steps = 60;
+        long gen0 = GC.CollectionCount(0);
+        long bytes = GC.GetAllocatedBytesForCurrentThread();
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++) sim.Step();
+        sw.Stop();
+        double rate = steps / sw.Elapsed.TotalSeconds;
+        var s = sim.Stats;
+        output.WriteLine($"disc10% {count} {model}: {rate:F1} steps/s over {steps} steps after 150 warm-up " +
+                         $"({sw.Elapsed.TotalMilliseconds / steps:F1} ms/step), count now {s.Count}, " +
+                         $"alloc/step (this thread) {(GC.GetAllocatedBytesForCurrentThread() - bytes) / steps} B, " +
+                         $"gen0 GCs {GC.CollectionCount(0) - gen0}, fragments {s.FragmentsCreated}");
+        Assert.True(rate > 0);
+    }
+
+    /// <summary>
+    /// Collision cost alone, like for like: the same 100k disc state (0.1% disc, one step in, so the first
+    /// contacts exist) resolved under each model, fresh copy per repetition.
+    /// </summary>
+    [Fact]
+    public void Resolver_SameState_CostByModel()
+    {
+        var sim = new PlanetSimulation(new SimulationParameters { CollisionModel = CollisionModel.MergeOrBounce });
+        sim.Load(Presets.DiscAroundStar(100_000, seed: 1));
+        sim.Step();
+        var state = sim.Particles.Clone();
+        foreach (var model in new[] { CollisionModel.MergeOrBounce, CollisionModel.Outcomes, CollisionModel.MergeOrBounce, CollisionModel.Outcomes })
+        {
+            var resolver = new CollisionResolver { Model = model, MaxBodies = state.Count, MinFragmentMass = state.Mass[1] };
+            double total = 0;
+            const int reps = 10;
+            int events = 0;
+            for (int r = 0; r < reps + 2; r++)
+            {
+                var ps = state.Clone();
+                var sw = Stopwatch.StartNew();
+                resolver.Resolve(ps);
+                if (r >= 2) total += sw.Elapsed.TotalMilliseconds;
+                events = resolver.LastMerges + resolver.LastBounces + resolver.LastPartialAccretions + resolver.LastHitAndRuns
+                         + resolver.LastErosions + resolver.LastDisruptions;
+            }
+            output.WriteLine($"resolve 100k same state {model}: {total / reps:F2} ms, {events} contacts resolved");
+        }
     }
 
     [Theory]
