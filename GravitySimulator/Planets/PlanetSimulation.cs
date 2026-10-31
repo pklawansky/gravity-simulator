@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Threading;
@@ -18,6 +19,11 @@ namespace GravitySimulator.Planets
         public float Restitution { get; set; } = 0.5f;
         /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
         public float MaxStepsPerSecond { get; set; } = 120f;
+        /// <summary>
+        /// Sub-grid stellar model (and its unit system) for the cosmic presets; null = off, which is how
+        /// the planet-scale presets run. Read when a state is loaded.
+        /// </summary>
+        public StellarParameters Stellar { get; set; }
     }
 
     /// <summary>Immutable per-step statistics.</summary>
@@ -37,6 +43,24 @@ namespace GravitySimulator.Planets
         /// <summary>Smallest particle mass at load time (one dust grain).</summary>
         public float GrainMass { get; init; }
 
+        /// <summary>True when the stellar model is on (cosmic presets); the fields below are only filled then.</summary>
+        public bool StellarModel { get; init; }
+        /// <summary>Body counts indexed by <see cref="BodyClass"/>.</summary>
+        public int[] ClassCounts { get; init; } = Array.Empty<int>();
+        public long StarsFormed { get; init; }
+        public long Supernovae { get; init; }
+        public long WhiteDwarfsFormed { get; init; }
+        public long NeutronStarsFormed { get; init; }
+        public long BlackHolesFormed { get; init; }
+        /// <summary>Black holes merging with a star or compact object (contact or sink capture).</summary>
+        public long BlackHoleMergers { get; init; }
+        /// <summary>Simulation time in years (dynamical clock, not the accelerated stellar clock).</summary>
+        public double SimYears { get; init; }
+        /// <summary>Mass of the heaviest black hole, or 0.</summary>
+        public float HeaviestBlackHole { get; init; }
+        /// <summary>Mass of the heaviest star, or 0.</summary>
+        public float HeaviestStar { get; init; }
+
         public static readonly SimulationStats Empty = new SimulationStats();
     }
 
@@ -49,7 +73,12 @@ namespace GravitySimulator.Planets
         public float[] Positions = Array.Empty<float>(); // xyz interleaved
         public float[] Radii = Array.Empty<float>();
         public float[] Masses = Array.Empty<float>();
+        /// <summary>Per-body <see cref="BodyClass"/> as a float (for the GL attribute).</summary>
+        public float[] Classes = Array.Empty<float>();
         public int Count;
+        /// <summary>Supernova flashes appended after <see cref="Count"/> in the arrays (radius = brightness 0..1, class = <see cref="FlashClass"/>).</summary>
+        public int FlashCount;
+        public const float FlashClass = 6f;
         public SimulationStats Stats = SimulationStats.Empty;
         /// <summary>Increments with every publish; lets the reader skip re-uploading the same data.</summary>
         public long Version;
@@ -71,7 +100,7 @@ namespace GravitySimulator.Planets
         private BarnesHutTree _tree = new BarnesHutTree(1024);
         private ParticleSystem _ps = new ParticleSystem(1);
 
-        private long _steps, _merges, _bounces, _escaped, _version;
+        private long _steps, _merges, _bounces, _escaped, _version, _bhContactMergers;
         private double _simTime, _stepSecondsEma;
         private long _lastStepStart;
         private float _grainMass;
@@ -91,14 +120,28 @@ namespace GravitySimulator.Planets
         // Cached delegates so the parallel loops do not allocate closures each step.
         private readonly Action<int> _kickDriftChunk;
         private readonly Action<int> _forceKickChunk;
+        private readonly Action<int> _forceChunk;
+        private readonly Action<int> _kickChunk;
         private int _chunkSize, _n;
         private float _halfDt, _dt;
+
+        private StellarEvolution _stellar;
+        private RadiationPressure _radiation;
+
+        /// <summary>Extra forces added after gravity each step (see <see cref="IForceContributor"/>).</summary>
+        public List<IForceContributor> ForceContributors { get; } = new List<IForceContributor>();
+        /// <summary>Per-step body evolution after collisions (see <see cref="IBodyEvolution"/>).</summary>
+        public List<IBodyEvolution> Evolutions { get; } = new List<IBodyEvolution>();
+        /// <summary>The active stellar model, or null when it is off.</summary>
+        public StellarEvolution Stellar => _stellar;
 
         public PlanetSimulation(SimulationParameters parameters)
         {
             _p = parameters ?? new SimulationParameters();
             _kickDriftChunk = KickDriftChunk;
             _forceKickChunk = ForceKickChunk;
+            _forceChunk = ForceChunk;
+            _kickChunk = KickChunk;
         }
 
         public SimulationParameters Parameters => _p;
@@ -116,7 +159,8 @@ namespace GravitySimulator.Planets
             lock (_gate)
             {
                 _ps = initial;
-                _steps = _merges = _bounces = _escaped = 0;
+                _steps = _merges = _bounces = _escaped = _bhContactMergers = 0;
+                ConfigureStellarModel();
                 _simTime = 0;
                 _grainMass = float.MaxValue;
                 for (int i = 0; i < _ps.Count; i++) if (_ps.Mass[i] > 0f && _ps.Mass[i] < _grainMass) _grainMass = _ps.Mass[i];
@@ -125,6 +169,21 @@ namespace GravitySimulator.Planets
                 ComputeAccelerations();
                 Publish();
             }
+        }
+
+        // Installs (or removes) the stellar model's evolution and radiation pressure per the parameters.
+        private void ConfigureStellarModel()
+        {
+            if (_stellar != null) Evolutions.Remove(_stellar);
+            if (_radiation != null) ForceContributors.Remove(_radiation);
+            _stellar = null;
+            _radiation = null;
+            var sp = _p.Stellar;
+            if (sp == null) return;
+            _stellar = new StellarEvolution(sp);
+            _radiation = new RadiationPressure(sp);
+            Evolutions.Add(_stellar);
+            ForceContributors.Add(_radiation);
         }
 
         /// <summary>Advances one step synchronously.</summary>
@@ -141,13 +200,16 @@ namespace GravitySimulator.Planets
 
             RunChunks(_kickDriftChunk);       // v += a dt/2 ; x += v dt
             BuildTree();
-            RunChunks(_forceKickChunk);       // a = F(x) ; v += a dt/2
+            ForcesAndKick();                  // a = F(x) ; v += a dt/2
 
             _collisions.MergeThreshold = _p.MergeThreshold;
             _collisions.Restitution = _p.Restitution;
             _collisions.Resolve(_ps);
             _merges += _collisions.LastMerges;
             _bounces += _collisions.LastBounces;
+            _bhContactMergers += _collisions.LastBlackHoleMergers;
+
+            foreach (var evolution in Evolutions) evolution.Evolve(_ps, _dt);
 
             float esc2 = _p.EscapeRadius * _p.EscapeRadius;
             int escaped = 0;
@@ -184,7 +246,32 @@ namespace GravitySimulator.Planets
         {
             BuildTree();
             _halfDt = 0f;
-            RunChunks(_forceKickChunk);
+            ForcesAndKick();
+        }
+
+        // Gravity and the half kick fused in one pass when there are no extra forces (planet presets);
+        // otherwise gravity, then the contributors, then the kick.
+        private void ForcesAndKick()
+        {
+            if (ForceContributors.Count == 0) { RunChunks(_forceKickChunk); return; }
+            RunChunks(_forceChunk);
+            foreach (var f in ForceContributors) f.AddAccelerations(_ps);
+            RunChunks(_kickChunk);
+        }
+
+        private void ForceChunk(int c)
+        {
+            int start = c * _chunkSize, end = Math.Min(_n, start + _chunkSize);
+            Vector3[] x = _ps.Position, a = _ps.Acceleration;
+            for (int i = start; i < end; i++) a[i] = _tree.AccelerationAt(x[i], i);
+        }
+
+        private void KickChunk(int c)
+        {
+            int start = c * _chunkSize, end = Math.Min(_n, start + _chunkSize);
+            Vector3[] v = _ps.Velocity, a = _ps.Acceleration;
+            float h = _halfDt;
+            for (int i = start; i < end; i++) v[i] += a[i] * h;
         }
 
         private void RunChunks(Action<int> body)
@@ -227,13 +314,15 @@ namespace GravitySimulator.Planets
         private void Publish()
         {
             int n = _ps.Count;
+            int flashes = _stellar?.FlashCount ?? 0;
             var s = _snap[_writeIdx];
-            if (s.Radii.Length < n)
+            if (s.Radii.Length < n + flashes)
             {
-                int cap = Math.Max(n, _ps.Capacity);
+                int cap = Math.Max(n, _ps.Capacity) + StellarEvolution.MaxFlashes;
                 s.Positions = new float[cap * 3];
                 s.Radii = new float[cap];
                 s.Masses = new float[cap];
+                s.Classes = new float[cap];
             }
             Vector3[] x = _ps.Position;
             float[] pos = s.Positions;
@@ -243,6 +332,19 @@ namespace GravitySimulator.Planets
             }
             Array.Copy(_ps.Radius, s.Radii, n);
             Array.Copy(_ps.Mass, s.Masses, n);
+            BodyClass[] cls = _ps.Class;
+            float[] fc = s.Classes;
+            for (int i = 0; i < n; i++) fc[i] = (float)cls[i];
+            for (int k = 0; k < flashes; k++)
+            {
+                int i = n + k;
+                Vector3 fp = _stellar.FlashPosition(k);
+                pos[i * 3] = fp.X; pos[i * 3 + 1] = fp.Y; pos[i * 3 + 2] = fp.Z;
+                s.Radii[i] = _stellar.FlashBrightness(k);
+                s.Masses[i] = 0f;
+                fc[i] = SimulationSnapshot.FlashClass;
+            }
+            s.FlashCount = flashes;
             s.Count = n;
             s.Version = ++_version;
             s.Stats = _stats = BuildStats();
@@ -288,8 +390,35 @@ namespace GravitySimulator.Planets
             }
             var largest = top.Slice(0, topCount).ToArray();
 
+            var st = _stellar;
+            int[] classCounts = Array.Empty<int>();
+            float heaviestBh = 0f, heaviestStar = 0f;
+            if (st != null)
+            {
+                classCounts = new int[6];
+                BodyClass[] cls = _ps.Class;
+                for (int i = 0; i < n; i++)
+                {
+                    BodyClass c = cls[i];
+                    classCounts[(int)c]++;
+                    if (c == BodyClass.BlackHole && m[i] > heaviestBh) heaviestBh = m[i];
+                    else if (c == BodyClass.Star && m[i] > heaviestStar) heaviestStar = m[i];
+                }
+            }
+
             return new SimulationStats
             {
+                StellarModel = st != null,
+                ClassCounts = classCounts,
+                StarsFormed = st?.StarsFormed ?? 0,
+                Supernovae = st?.Supernovae ?? 0,
+                WhiteDwarfsFormed = st?.WhiteDwarfsFormed ?? 0,
+                NeutronStarsFormed = st?.NeutronStarsFormed ?? 0,
+                BlackHolesFormed = st?.BlackHolesFormed ?? 0,
+                BlackHoleMergers = (st?.BlackHoleMergers ?? 0) + _bhContactMergers,
+                SimYears = st != null ? st.Parameters.Units.SimToYears(_simTime) : 0,
+                HeaviestBlackHole = heaviestBh,
+                HeaviestStar = heaviestStar,
                 StepCount = _steps,
                 SimTime = _simTime,
                 Count = n,
