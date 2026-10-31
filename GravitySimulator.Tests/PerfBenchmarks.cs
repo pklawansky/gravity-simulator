@@ -36,6 +36,30 @@ public class PerfBenchmarks(ITestOutputHelper output)
     }
 
     [Theory]
+    [InlineData(PresetKind.StarFormingCloud)]
+    [InlineData(PresetKind.DenseStarCluster)]
+    public void CosmicPreset_StepsPerSecond(PresetKind kind)
+    {
+        var p = new SimulationParameters();
+        Presets.Configure(kind, p);
+        p.MergeThreshold = Presets.DefaultMergeThreshold(kind);
+        p.Restitution = Presets.DefaultRestitution(kind);
+        var sim = new PlanetSimulation(p);
+        int count = Presets.DefaultCount(kind);
+        sim.Load(Presets.Create(kind, count, seed: 1));
+        for (int i = 0; i < 20; i++) sim.Step(); // warm-up
+
+        const int steps = 200;
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++) sim.Step();
+        double rate = steps / sw.Elapsed.TotalSeconds;
+        var s = sim.Stats;
+        output.WriteLine($"{kind} {count}: {rate:F1} steps/s over {steps} steps, count now {s.Count}, " +
+                         $"stars formed {s.StarsFormed}, supernovae {s.Supernovae}, black holes formed {s.BlackHolesFormed}");
+        Assert.True(rate > 0);
+    }
+
+    [Theory]
     [InlineData(50_000)]
     public void DiscPreset_PhaseBreakdown(int count)
     {
