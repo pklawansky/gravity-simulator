@@ -16,6 +16,8 @@ namespace GravitySimulator.Planets
         public float EscapeRadius { get; set; } = 20f;
         public float MergeThreshold { get; set; } = 1f;
         public float Restitution { get; set; } = 0.5f;
+        /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
+        public float MaxStepsPerSecond { get; set; } = 120f;
     }
 
     /// <summary>Immutable per-step statistics.</summary>
@@ -71,6 +73,7 @@ namespace GravitySimulator.Planets
 
         private long _steps, _merges, _bounces, _escaped, _version;
         private double _simTime, _stepSecondsEma;
+        private long _lastStepStart;
         private float _grainMass;
         private volatile SimulationStats _stats = SimulationStats.Empty;
 
@@ -83,6 +86,7 @@ namespace GravitySimulator.Planets
         private Thread _thread;
         private readonly ManualResetEventSlim _running = new ManualResetEventSlim(false);
         private volatile bool _stop;
+        private readonly ManualResetEventSlim _wake = new ManualResetEventSlim(false); // set on Dispose to cut a throttle wait short
 
         // Cached delegates so the parallel loops do not allocate closures each step.
         private readonly Action<int> _kickDriftChunk;
@@ -155,7 +159,16 @@ namespace GravitySimulator.Planets
 
             _steps++;
             _simTime += _dt;
-            double secs = (Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency;
+            // Steps/s is measured start-to-start (so throttling shows), falling back to the compute time
+            // after a pause or for the first step.
+            long now = Stopwatch.GetTimestamp();
+            double secs = (now - t0) / (double)Stopwatch.Frequency;
+            if (_lastStepStart != 0)
+            {
+                double interval = (t0 - _lastStepStart) / (double)Stopwatch.Frequency;
+                if (interval < 1.0) secs = Math.Max(secs, interval);
+            }
+            _lastStepStart = t0;
             _stepSecondsEma = _stepSecondsEma == 0 ? secs : _stepSecondsEma * 0.9 + secs * 0.1;
             Publish();
         }
@@ -319,9 +332,16 @@ namespace GravitySimulator.Planets
             {
                 _running.Wait();
                 if (_stop) break;
+                long t0 = Stopwatch.GetTimestamp();
                 lock (_gate)
                 {
                     if (!_stop) StepCore();
+                }
+                float max = _p.MaxStepsPerSecond;
+                if (max > 0f)
+                {
+                    double spare = 1.0 / max - (Stopwatch.GetTimestamp() - t0) / (double)Stopwatch.Frequency;
+                    if (spare > 0.001) _wake.Wait(TimeSpan.FromSeconds(spare));
                 }
             }
         }
@@ -331,6 +351,7 @@ namespace GravitySimulator.Planets
         {
             _stop = true;
             _running.Set();
+            _wake.Set();
             _thread?.Join(TimeSpan.FromSeconds(10));
         }
     }
