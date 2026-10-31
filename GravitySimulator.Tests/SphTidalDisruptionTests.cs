@@ -37,4 +37,19 @@ public class SphTidalDisruptionTests
         // The camera frames the region the debris orbits in (apocentre ~1.8 r_t).
         Assert.InRange(sc.CameraDistance / rt, 3f, 6f);
     }
+
+    [Fact]
+    public void SwallowedMass_IsBookedInDouble_BelowTheHolesFloatResolution()
+    {
+        var sinks = new SinkManager(new SphParameters());
+        var ps = new ParticleSystem(4);
+        ps.Add(Vector3.Zero, Vector3.Zero, 1000f, 0.004f, BodyClass.BlackHole);
+        sinks.Reset(ps);
+        const float m = 1.2e-5f; // one TDE particle: 1.2e-8 of the hole, under float epsilon
+        var events = new List<AccretionEvent>();
+        for (int k = 0; k < 500; k++) events.Add(new AccretionEvent { Sink = 0, Mass = m, Position = Vector3.UnitX * 0.01f });
+        sinks.Apply(events);
+        Assert.Equal(500, sinks.AccretedParticles);
+        Assert.Equal(500 * (double)m, sinks.BlackHoleAccretedMass, 1e-9);
+    }
 }

@@ -55,12 +55,18 @@ namespace GravitySimulator.Sph
         public long Created { get; private set; }
         /// <summary>Total gas particles absorbed by sinks (including those that formed sinks).</summary>
         public long AccretedParticles { get; private set; }
+        /// <summary>
+        /// Gas mass absorbed by black holes, summed in double precision: a TDE particle is ~10⁻⁸ of the
+        /// hole's mass, below float resolution, so the hole's float mass alone does not show it.
+        /// </summary>
+        public double BlackHoleAccretedMass { get; private set; }
 
         public void Reset(ParticleSystem sinks)
         {
             Sinks = sinks ?? new ParticleSystem(64);
             Forming.Clear();
             Created = AccretedParticles = 0;
+            BlackHoleAccretedMass = 0;
         }
 
         public float AccretionRadius(int sink) =>
@@ -120,6 +126,7 @@ namespace GravitySimulator.Sph
                 if (ev.Sink < existing)
                 {
                     int k = ev.Sink;
+                    if (ps.Class[k] == BodyClass.BlackHole) BlackHoleAccretedMass += ev.Mass;
                     float ms = ps.Mass[k], mt = ms + ev.Mass;
                     ps.Position[k] = (ps.Position[k] * ms + ev.Position * ev.Mass) / mt;
                     ps.Velocity[k] = (ps.Velocity[k] * ms + ev.Velocity * ev.Mass) / mt;
