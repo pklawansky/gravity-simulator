@@ -299,6 +299,28 @@ public class CollisionResolverOutcomesTests
         AssertConserved(before, ps, vi);
     }
 
+    /// <summary>
+    /// Regression (seen at 450k live on the GPU path): a super-catastrophic hit whose largest remnant rounds to 0
+    /// against the total mass, with all the debris in one fragment, left the remnant with mass 0 and radius 0,
+    /// and its escape speed 0/0 made every velocity of the event NaN.
+    /// </summary>
+    [Fact]
+    public void SuperCatastrophic_RemnantRoundsToZero_StaysFiniteAndConserved()
+    {
+        var ps = Contact(vi: 1e4f, b: 0f);
+        var before = Totals(ps);
+        var r = Outcomes(m0: 1.5f); // room for one fragment only: it takes all the debris
+        r.Resolve(ps);
+        Assert.Equal(1, r.LastDisruptions);
+        for (int i = 0; i < ps.Count; i++)
+        {
+            Assert.True(float.IsFinite(ps.Position[i].X + ps.Position[i].Y + ps.Position[i].Z), $"body {i} position {ps.Position[i]}");
+            Assert.True(float.IsFinite(ps.Velocity[i].X + ps.Velocity[i].Y + ps.Velocity[i].Z), $"body {i} velocity {ps.Velocity[i]}");
+            Assert.True(ps.Mass[i] > 0f && ps.Radius[i] > 0f, $"body {i} mass {ps.Mass[i]} radius {ps.Radius[i]}");
+        }
+        AssertConserved(before, ps, 1e4f);
+    }
+
     [Fact]
     public void NoFragmentLighterThanM0_EvenWhenDebrisIsSmall()
     {

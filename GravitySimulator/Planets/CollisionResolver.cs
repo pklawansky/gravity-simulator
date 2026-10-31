@@ -481,8 +481,12 @@ namespace GravitySimulator.Planets
             LastFoldedAtCeiling += folded;
             float fragMass = 0f;
             for (int k = 0; k < n; k++) fragMass += masses[k];
-            float mr = systemMass - fragMass;
-            float rr = RadiusOf(mr, rho);
+            // The largest remnant can round to nothing against the total (super-catastrophic hits). Then the
+            // remnant's slot is left dead (mass 0, compacted with the merged-away bodies) and the fragments leave
+            // at the whole system's escape speed instead of 0/0.
+            float mr = MathF.Max(0f, systemMass - fragMass);
+            float rr = mr > 0f ? RadiusOf(mr, rho) : 0f;
+            if (mr <= 0f) _removed++; // the dead slot counts as removed (live-count budget, compaction)
             ps.Mass[rem] = mr;
             ps.Radius[rem] = rr;
             ps.Acceleration[rem] = a;
@@ -494,7 +498,7 @@ namespace GravitySimulator.Planets
             }
             EnsureFragmentCapacity(_fragCount + n);
 
-            float vEsc = MathF.Sqrt(2f * mr / rr);
+            float vEsc = mr > 0f ? MathF.Sqrt(2f * mr / rr) : MathF.Sqrt(2f * systemMass / RadiusOf(systemMass, rho));
             Vector3 e1 = Vector3.Normalize(Vector3.Cross(axis, MathF.Abs(axis.X) < 0.9f ? Vector3.UnitX : Vector3.UnitY));
             Vector3 e2 = Vector3.Cross(axis, e1);
             const float CosHalfAngle = 0.70710678f; // 45-degree cone

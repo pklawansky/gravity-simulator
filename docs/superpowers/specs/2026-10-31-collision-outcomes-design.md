@@ -263,3 +263,98 @@ Across seeds 1–4, the differences are mostly within the seed-to-seed spread:
 
 Clump counts run about 6% lower, consistent with chained merges now taking an extra step each. The spec's bar of at
 least 50 clumps still holds.
+
+## Amendment 2026-10-31: GPU gravity, ceiling raised to 450,000
+
+Request (task brief, paraphrasing the human): move Planet formation's gravity onto the GPU, then re-measure and
+put the ceiling where the simulation starts to become unaffordable (about 5 steps/s held), with fragments still
+numerous.
+
+This amendment replaces the ceiling in the amendment above.
+
+### What changed
+
+- **GPU gravity** (`Planets/GpuGravity.cs`, `Sph/Shaders/planet_gravity.comp`). The CPU still builds the octree.
+  It is flattened into the stackless layout the SPH mode already uses (`BarnesHutTree.Flatten`, now also returning
+  the bodies in walk order) and uploaded with `GpuFlatTree`, which is now shared with the SPH solver. One GPU thread
+  per body walks it with the CPU tree's rules: the same θ = 0.6 test, the same "point inside the cube" rule, one
+  Plummer ε² for every pair and node, and itself skipped. Force contributors (radiation pressure) still run on
+  the CPU, before the kick.
+- **Threading.** The GL work runs on a private thread that owns a hidden GL 4.3 context, so the simulation thread,
+  the UI thread (on Load) and tests can all call it. Calls are serialised.
+- **Fallback.** `PlanetSimulation` stays on the CPU tree by default, so the golden-hash tests are unchanged. The
+  app calls `TryEnableGpuGravity` on load. If the context or the shader fails, or a GL call fails later, it drops
+  to the CPU tree with no dialog. The readout says "Gravity GPU" or "Gravity CPU (reason)".
+- **Tree order.** On the GPU path only, the bodies are re-sorted into the tree's walk order after every kick
+  (`ParticleSystem.Reorder`). The next tree build and flatten then walk memory in order. At 400k this cut them
+  from 150 ms to 60 ms.
+
+### Accuracy (`PlanetGpuGravityTests`, θ = 0.6)
+
+Relative error of |a| per body against the direct O(n²) sum:
+
+| state | CPU tree: mean / p99 / max | GPU: mean / p99 / max | GPU vs CPU tree: max |
+|---|---|---|---|
+| uniform cloud, 3,000, ε = 0.01 | 0.96% / 3.3% / 10.4% | identical | 3.1e-6 |
+| 10% disc, 4,000, ε = 0.005 | 0.18% / 0.91% / 3.8% | identical | 1.7e-6 |
+
+The GPU walk is the CPU walk to float rounding. The two only add the terms in a different order. The tests
+require a mean below 1.5% and a p99 below 5% (the CPU tree's own bound), and at most 1e-4 between GPU and CPU.
+
+### Step split (debris cloud, Release, 32 cores, RTX 4070 Laptop)
+
+Method as above, now with the simulation's own per-phase timers (`PlanetSimulation.LastPhaseTimes`, averaged over
+10 steps). "Gravity" is flatten, upload, walk, read-back, kick and reorder. The tree build is listed on its own.
+
+| N | live | CPU step | GPU step | GPU: tree build / gravity / collisions |
+|---|---|---|---|---|
+| 50,000 | 54k → 62k | 61 ms (16.4/s) | 24 ms (42.5/s) | 6.6 / 11.0 / 5.4 ms |
+| 100,000 | 106k → 118k | 149 ms (6.7/s) | 43 ms (23.5/s) | 13.0 / 19.1 / 9.5 ms |
+| 150,000 | 156k → 170k | 238 ms (4.2/s) | 62 ms (16.1/s) | 19.3 / 27.1 / 14.4 ms |
+| 200,000 | 205k → 222k | 353 ms (2.8/s) | 85 ms (11.7/s) | 25.7 / 38.5 / 19.2 ms |
+| 300,000 | 298k → 315k | 544 ms (1.8/s) | 125 ms (8.0/s) | 36.9 / 54.3 / 30.9 ms |
+| 400,000 | 385k → 398k | 805 ms (1.2/s) | 160 ms (6.2/s) | 47.4 / 66.5 / 43.3 ms |
+| 500,000 | 463k → 467k | — | 197 ms (5.1/s) | 57.0 / 83.3 / 53.1 ms |
+| 600,000 | 533k → 528k | — | 222 ms (4.5/s) | 65.3 / 94.6 / 58.0 ms |
+| 800,000 | 663k → 629k | — | 277 ms (3.6/s) | 79.5 / 116.1 / 76.8 ms |
+| 1,000,000 | 770k → 701k | — | 327 ms (3.1/s) | 90.0 / 128.3 / 102.9 ms |
+
+On the CPU, gravity was 78% of the step at 400k (631 of 805 ms). On the GPU, no single phase dominates any more. At
+400k, the 66.5 ms of "gravity" is 23 ms of flatten and pack on the CPU and 42 ms of upload, walk and read-back. The
+**CPU tree build (single-threaded) and the collision sweep are now the bottleneck**: together about 57% of the step.
+The obvious next steps are a parallel or GPU tree build, and moving the collision broad phase onto the GPU. Neither
+is part of this change.
+
+### New ceiling
+
+`SimulationParameters.DefaultMaxLiveParticles` = **450,000** with GPU gravity. The new
+`SimulationParameters.CpuMaxLiveParticles` = **150,000** is used when the app falls back to the CPU. The Particles
+box maximum follows whichever ceiling is active.
+
+Held at the ceiling (`DebrisCloud_HeldAtCeiling`: the debris cloud loaded at the ceiling, 30 steps timed):
+
+| ceiling | backend | live | steps/s |
+|---|---|---|---|
+| 150,000 | CPU | 144k → 150k | 4.6 |
+| 150,000 | GPU | 150k → 150k | 17.2 |
+| 400,000 | GPU | 384k → 400k | 5.9 |
+| 450,000 | GPU | 424k → 450k | **5.3** |
+| 500,000 | GPU | 463k → 500k | 4.6 |
+
+450,000 is the largest round count that holds the "about 5 steps/s" bar that set 100,000 and then 150,000.
+500,000 falls below it, at 4.6 steps/s.
+
+### Clumping check, GPU vs CPU (10% disc, 50k, 1,500 steps, Outcomes; `GpuVsCpuClumpingTests`)
+
+| seed | CPU: clumps (≥100 grains), bodies, fragments | GPU: clumps (≥100 grains), bodies, fragments |
+|---|---|---|
+| 1 | 121 (61), 1,788, 9,484 | 112 (56), 1,803, 9,422 |
+| 2 | 132 (59), 3,170, 15,029 | 127 (61), 2,605, 11,034 |
+| 3 | 121 (60), 2,073, 10,707 | 110 (63), 2,338, 10,171 |
+| 4 | 118 (63), 2,031, 9,387 | 125 (69), 2,466, 10,891 |
+
+GPU runs do not reproduce CPU runs bit for bit. Forces differ in the last bits, and the tree-order reorder changes
+the order in which contacts are resolved. Clumps of 10+ grains average 118.5 on the GPU against 123 on the CPU,
+about 4% fewer. That is inside the seed-to-seed spread (110–127 against 118–132), and four seeds cannot tell it
+apart from noise. Clumps of 100+ grains average 62 on both. The spec's bar of at least 50 clumps holds on both
+backends.
