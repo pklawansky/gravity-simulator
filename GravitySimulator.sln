@@ -5,16 +5,42 @@ VisualStudioVersion = 17.0.32014.148
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GravitySimulator", "GravitySimulator\GravitySimulator.csproj", "{33337930-FAE9-4433-84C2-AEECEEC293F6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GravitySimulator.Tests", "GravitySimulator.Tests\GravitySimulator.Tests.csproj", "{B881194E-C9B2-4F42-87A3-5E17522198CC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
 		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|x64.Build.0 = Debug|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Debug|x86.Build.0 = Debug|Any CPU
 		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|x64.ActiveCfg = Release|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|x64.Build.0 = Release|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|x86.ActiveCfg = Release|Any CPU
+		{33337930-FAE9-4433-84C2-AEECEEC293F6}.Release|x86.Build.0 = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|x64.Build.0 = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Debug|x86.Build.0 = Debug|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|x64.ActiveCfg = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|x64.Build.0 = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|x86.ActiveCfg = Release|Any CPU
+		{B881194E-C9B2-4F42-87A3-5E17522198CC}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
