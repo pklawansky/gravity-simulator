@@ -98,3 +98,69 @@ Outcome selection, in order:
 
 Material strength regime, composition and atmospheres (next design), fragment size
 distributions below m₀, and changes to the SPH mode or to the cosmic presets' stellar bodies.
+
+## Amendment 2026-10-31: more fragments, overflow kept separate
+
+Decision (human, verbatim): "I am happy for the overflow fragments to remain separate - looking for
+something closer to reality while also looking good. too few fragments makes it look less dramatic.
+let's set an upper limit to where we think the simulation will start to become unaffordable"
+
+This amendment replaces the Fragments rules above where they differ.
+
+### Measured cost (Release, 32 cores, RTX 4070 Laptop)
+
+`AffordabilityBenchmarks` (Category=Perf). Debris cloud: a 50k 10% disc after 150 steps (clumps, fragments,
+about 15k live) topped up to N with debris of m0/4 to m0 on near-circular orbits, σ_z = 0.05. Fresh disc: the
+UI-default 10% disc loaded at N, timed on steps 4–13. That disc merges fast, so its live count is far below N.
+Render: upload plus draw into a 1030×800 offscreen framebuffer (the app's GL view), with glFinish.
+
+| N (debris cloud) | live during timing | step | steps/s | render | fresh disc at N: live, steps/s |
+|---|---|---|---|---|---|
+| 50,000 | 52.6k → 57.5k | 85 ms | 11.8 | 0.6 ms | 42.9k, 21.5 |
+| 100,000 | 103k → 110k | 212 ms | 4.7 | 1.8 ms | 73.3k, 8.9 |
+| 150,000 | 151k → 159k | 370 ms | 2.7 | 2.5 ms | 94.4k, 6.5 |
+| 200,000 | 198k → 205k | 603 ms | 1.7 | 3.0 ms | 108k, 4.8 |
+| 300,000 | 285k → 291k | 1,081 ms | 0.9 | 4.2 ms | 119k, 3.2 |
+| 400,000 | 367k → 368k | 1,743 ms | 0.6 | 6.0 ms | 119k, 2.7 |
+
+At about 110k live, a debris-cloud step is roughly 90 ms of gravity and 135 ms of collision sweep. Rendering is
+never the limit (≥ 166 fps even at 400k), so the step rate decides.
+
+### Rules
+
+- **Global ceiling:** `SimulationParameters.MaxLiveParticles` = **100,000**, the largest clean count that still
+  sustains about 5 steps/s. The effective ceiling is max(MaxLiveParticles, count at Load), so a larger load still
+  runs. Below the ceiling, every fragment stays a separate particle. Only at the ceiling is the excess folded into
+  the largest fragment, or into the remnant if no fragment fits. Folded fragments are counted
+  (`FragmentsFoldedAtCeiling`, shown as "Folded" in the readout). Particle capacity grows geometrically but never
+  past the ceiling.
+- **Count per event:** n = min(**64**, floor(debris / m_min)). The split stays LS12's power law, largest first:
+  m_k ∝ k^(−3/β), β = 2.85. That is the rank-ordered form of the eq. 31 cumulative distribution N(>D) ∝ D^−β:
+  the k-th largest body has N(>m_k) = k. It is trimmed so no fragment is below m_min. The count grows with debris
+  mass: about 3 fragments for 10 m_min of debris, about 23 for 100 m_min, and 64 from about 370 m_min. Cost of the
+  cap: a forced shower of 1,000 head-on disruptions, each emitting the full 64 fragments, resolves in 37 ms
+  (about 37 µs per event). The cap is therefore not the expensive part. The live count it creates is, and the
+  ceiling bounds that.
+- **Minimum fragment mass:** m_min = **m0/4**. A fragment of m0/4 has 0.63 of a grain's radius, so it still
+  draws as a visible point. A hit with only two grains' worth of debris now throws 3 pieces instead of 1. Going
+  lower (m0/8) would add bodies faster than it adds anything visible, and it would sit further below the disc's
+  own resolution (one grain).
+- **Velocity:** relative to the remnant, u_k = V_esc,rem × min(2, 1.05 (m_k/m_1)^(−1/6) + 0.2 ξ), with ξ uniform
+  in [0, 1). The largest fragment leaves just above escape, and smaller fragments leave faster, up to 2 V_esc.
+  The weak v ∝ m^(−1/6) mass dependence follows laboratory disruption experiments (Nakamura & Fujiwara 1991,
+  Icarus 92, 132). Directions and the momentum balancing are as before: a 45° double cone, then the set is
+  shifted so total mass, momentum and centre of mass are conserved exactly.
+- **Placement:** each fragment starts just outside the remnant and is pushed outward along its own direction
+  until it clears every fragment already placed in this event, and the hit-and-run target. This replaces the
+  per-side radial stacking, which grew too long at 64 fragments. Fragments still never collide in the step they
+  are born.
+
+### Clumping check (10% disc, 50k, seed 1, 1,500 steps)
+
+| | before (8 fragments, m0, ceiling = load) | after |
+|---|---|---|
+| clumps of 10+ grains | 112 | 131 |
+| bodies left | 636 | 2,076 |
+| fragments created | 1,747 | 8,988 |
+| peak live count | 50,000 | 50,000 (the load; never exceeded) |
+| folded at ceiling | n/a | 0 |
