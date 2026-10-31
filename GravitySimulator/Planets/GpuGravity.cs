@@ -59,6 +59,12 @@ namespace GravitySimulator.Planets
         public int[] LastOrder => _order;
         /// <summary>CPU time of the last <see cref="Compute"/> scattering the accelerations back (ms).</summary>
         public double LastScatterMs { get; private set; }
+        /// <summary>Of <see cref="LastFlattenMs"/>: <see cref="BarnesHutTree.Flatten"/> alone (ms); the rest is packing.</summary>
+        public double LastTreeFlattenMs { get; private set; }
+        /// <summary>Of <see cref="LastGpuMs"/>: positions + tree upload (to glFinish), the walk kernel, and the read-back (ms).</summary>
+        public double LastUploadMs { get; private set; }
+        public double LastKernelMs { get; private set; }
+        public double LastReadbackMs { get; private set; }
 
         private GpuGravity()
         {
@@ -187,6 +193,7 @@ namespace GravitySimulator.Planets
             _clock.Restart();
             if (_order.Length < n) _order = new int[ps.Capacity];
             int ordered = tree.Flatten(_flat, null, _order);
+            LastTreeFlattenMs = _clock.Elapsed.TotalMilliseconds;
             // Bodies left out of the tree (mass <= 0) still get an acceleration, as on the CPU path.
             if (ordered < n)
             {
@@ -213,12 +220,16 @@ namespace GravitySimulator.Planets
 
             _clock.Restart();
             int nodes = _flat.Count;
+            double upload = 0, kernel = 0;
             Invoke(() =>
             {
+                long g0 = Stopwatch.GetTimestamp();
                 EnsureParticleCapacity(n);
                 GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _posBuf);
                 GL.BufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, n * 16, _pos);
                 gpuTree.Upload();
+                GL.Finish();
+                long g1 = Stopwatch.GetTimestamp();
                 var g = _program;
                 g.Set("uCount", (uint)n);
                 g.Set("uNodeCount", (uint)nodes);
@@ -231,12 +242,19 @@ namespace GravitySimulator.Planets
                 GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 4, gpuTree.NodeC);
                 g.Dispatch(n, WG);
                 GL.MemoryBarrier(MemoryBarrierFlags.BufferUpdateBarrierBit);
+                GL.Finish();
+                long g2 = Stopwatch.GetTimestamp();
+                upload = (g1 - g0) * 1000.0 / Stopwatch.Frequency;
+                kernel = (g2 - g1) * 1000.0 / Stopwatch.Frequency;
                 GL.BindBuffer(BufferTarget.ShaderStorageBuffer, _accBuf);
                 GL.GetBufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero, n * 16, _acc);
                 var err = GL.GetError();
                 if (err != ErrorCode.NoError) throw new InvalidOperationException("GL error " + err);
             });
             LastGpuMs = _clock.Elapsed.TotalMilliseconds;
+            LastUploadMs = upload;
+            LastKernelMs = kernel;
+            LastReadbackMs = Math.Max(0, LastGpuMs - upload - kernel);
 
             _clock.Restart();
             var a = ps.Acceleration;

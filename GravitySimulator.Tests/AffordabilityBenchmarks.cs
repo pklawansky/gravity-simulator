@@ -162,6 +162,41 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The optimisation profile: the debris cloud on the GPU backend at 150k / 350k / 500k, 10 steps after 2
+    /// warm-up steps, with every sub-phase of <see cref="PlanetSimulation.LastPhaseTimes"/> averaged.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(150_000)]
+    [InlineData(350_000)]
+    [InlineData(500_000)]
+    public void DebrisCloud_GpuProfile(int count)
+    {
+        using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 2_000_000 });
+        Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        sim.Load(DebrisCloud(count));
+        for (int i = 0; i < 2; i++) sim.Step();
+        const int steps = 10;
+        var sum = new double[16];
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < steps; i++)
+        {
+            sim.Step();
+            var t = sim.LastPhaseTimes;
+            double[] v = { t.KickDrift, t.TreeBuild, t.GpuTreeFlatten, t.GpuFlatten - t.GpuTreeFlatten, t.GpuUpload, t.GpuKernel, t.GpuReadback,
+                           t.GpuScatter, t.Reorder, t.Gravity - t.GpuFlatten - t.GpuWalk - t.GpuScatter - t.Reorder,
+                           t.CollisionDetect, t.CollisionResolve, t.CollisionCompact, t.Collisions - t.CollisionDetect - t.CollisionResolve - t.CollisionCompact,
+                           t.Rest, t.Total };
+            for (int k = 0; k < v.Length; k++) sum[k] += v[k];
+        }
+        sw.Stop();
+        Assert.True(sim.GpuGravityActive, sim.GravityBackend);
+        string[] names = { "kick+drift", "tree build", "flatten", "pack", "upload", "GPU walk", "readback", "scatter", "reorder", "gravity other",
+                           "coll broad", "coll resolve", "coll compact", "coll other", "rest", "total" };
+        output.WriteLine($"profile GPU {count}: live {sim.Particles.Count}, wall {sw.Elapsed.TotalMilliseconds / steps:F1} ms/step; " +
+                         string.Join(", ", names.Select((nm, k) => $"{nm} {sum[k] / steps:F1}")));
+    }
+
+    /// <summary>
     /// The ceiling check: the debris cloud loaded at <paramref name="ceiling"/> with MaxLiveParticles =
     /// <paramref name="ceiling"/>, so fragments keep it pinned there; 30 steps timed after 2 warm-up steps.
     /// </summary>

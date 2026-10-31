@@ -104,7 +104,20 @@ namespace GravitySimulator.Planets
         public double GpuFlatten { get; init; }
         /// <summary>Of <see cref="Gravity"/>, GPU path only: upload, walk and read-back on the GL thread.</summary>
         public double GpuWalk { get; init; }
+        /// <summary>Of <see cref="GpuFlatten"/>: the tree flatten alone (the rest is packing positions and nodes).</summary>
+        public double GpuTreeFlatten { get; init; }
+        /// <summary>Of <see cref="GpuWalk"/>: upload (to glFinish), walk kernel (to glFinish), read-back and thread hand-off.</summary>
+        public double GpuUpload { get; init; }
+        public double GpuKernel { get; init; }
+        public double GpuReadback { get; init; }
+        /// <summary>Of <see cref="Gravity"/>, GPU path only: scattering the accelerations, and the reorder into tree order.</summary>
+        public double GpuScatter { get; init; }
+        public double Reorder { get; init; }
         public double Collisions { get; init; }
+        /// <summary>Of <see cref="Collisions"/>: broad phase (finding the touching pairs), the sequential resolve, compact + append.</summary>
+        public double CollisionDetect { get; init; }
+        public double CollisionResolve { get; init; }
+        public double CollisionCompact { get; init; }
         /// <summary>Body evolution, escape removal and the snapshot publish.</summary>
         public double Rest { get; init; }
         public double Total => KickDrift + TreeBuild + Gravity + Collisions + Rest;
@@ -360,13 +373,23 @@ namespace GravitySimulator.Planets
                 Gravity = Ms(t2, t3),
                 GpuFlatten = _lastGpu ? _gpu?.LastFlattenMs ?? 0 : 0,
                 GpuWalk = _lastGpu ? _gpu?.LastGpuMs ?? 0 : 0,
+                GpuTreeFlatten = _lastGpu ? _gpu?.LastTreeFlattenMs ?? 0 : 0,
+                GpuUpload = _lastGpu ? _gpu?.LastUploadMs ?? 0 : 0,
+                GpuKernel = _lastGpu ? _gpu?.LastKernelMs ?? 0 : 0,
+                GpuReadback = _lastGpu ? _gpu?.LastReadbackMs ?? 0 : 0,
+                GpuScatter = _lastGpu ? _gpu?.LastScatterMs ?? 0 : 0,
+                Reorder = _lastGpu ? _lastReorderMs : 0,
                 Collisions = Ms(t3, t4),
+                CollisionDetect = _collisions.LastDetectMs,
+                CollisionResolve = _collisions.LastResolveMs,
+                CollisionCompact = _collisions.LastCompactMs,
                 Rest = Ms(t4, t5),
             };
         }
 
         private static double Ms(long a, long b) => (b - a) * 1000.0 / Stopwatch.Frequency;
         private bool _lastGpu;
+        private double _lastReorderMs;
 
         private void BuildTree()
         {
@@ -395,7 +418,9 @@ namespace GravitySimulator.Planets
                 // Keep the bodies in tree order so the next tree build, flatten and collision sweep walk
                 // memory coherently (2-3x faster builds at 400k). GPU path only: the CPU path keeps its order,
                 // which the golden-hash tests pin.
+                long r0 = Stopwatch.GetTimestamp();
                 _ps.Reorder(_gpu.LastOrder, _spare ??= new ParticleSystem(_ps.Capacity));
+                _lastReorderMs = Ms(r0, Stopwatch.GetTimestamp());
                 return;
             }
             if (ForceContributors.Count == 0) { RunChunks(_forceKickChunk); return; }
