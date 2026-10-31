@@ -395,6 +395,9 @@ namespace GravitySimulator.Sph
             {
                 sb.AppendLine($"Swallowed {s.Accreted,10:N0} particles");
                 sb.AppendLine($"          {s.BlackHoleAccreted,10:G3} M☉ ({s.BlackHoleAccreted / SphPresets.StarMass,0:P1} of the star)");
+                var bh = _sim.SinkManager?.Sinks;
+                if (bh != null && bh.Count > 0)
+                    sb.AppendLine($"Hole r_s {bh.Radius[0],7:G3} R☉, absorbs < {sc.BlackHoleAccretionRadius / bh.Radius[0]:0.#} r_s");
             }
             var t = s.Times;
             sb.AppendLine();

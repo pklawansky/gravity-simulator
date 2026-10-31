@@ -65,7 +65,7 @@ namespace GravitySimulator.Sph
             _scenario = scenario ?? throw new ArgumentNullException(nameof(scenario));
             var gas = scenario.Gas;
             _solver = new SphGpuSolver(scenario.Parameters, gas.Count + Math.Max(scenario.Headroom, 0));
-            _sinks = new SinkManager(scenario.Parameters) { BlackHoleAccretionRadius = scenario.BlackHoleAccretionRadius };
+            _sinks = new SinkManager(scenario.Parameters) { BlackHoleAccretionRadius = scenario.BlackHoleAccretionRadius, PreciseBlackHoleAccretion = scenario.PreciseBlackHoleAccretion };
             _sinks.Reset(CloneSinks(scenario.Sinks));
             _stellar = scenario.Stellar != null ? new StellarEvolution(scenario.Stellar) : null;
             _lastSupernovae = 0;

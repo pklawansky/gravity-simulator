@@ -25,6 +25,8 @@ namespace GravitySimulator.Sph
         /// <summary>Initial sinks (e.g. the black hole), or an empty system.</summary>
         public ParticleSystem Sinks { get; init; }
         public float BlackHoleAccretionRadius { get; init; }
+        /// <summary>Black holes book accreted gas in double precision (see <see cref="SinkManager.PreciseBlackHoleAccretion"/>).</summary>
+        public bool PreciseBlackHoleAccretion { get; init; }
         public UnitSystem Units { get; init; }
         public float CameraDistance { get; init; }
         /// <summary>Camera yaw and pitch set on load (radians), or null to keep the current view direction.</summary>
@@ -64,8 +66,10 @@ namespace GravitySimulator.Sph
         /// <summary>ρ_crit of the collapsing cloud in units of its mean density (stiffening well above ρ_sink).</summary>
         public const float CloudCriticalDensityFactor = 300f;
 
-        // Tidal disruption (M☉, R☉): a 0.6 M☉ white dwarf (R = 0.0125 R☉) and a 1000 M☉ black hole.
-        public const float BlackHoleMass = 1e3f, StarMass = 0.6f, StarRadius = 0.0125f, Beta = 5f, Eccentricity = 0.8f, StartTidalRadii = 1.5f;
+        // Tidal disruption (M☉, R☉): the Sun (an n = 1.5 polytrope) and a 10⁶ M☉ Paczyński-Wiita black hole.
+        public const float BlackHoleMass = 1e6f, StarMass = 1f, StarRadius = 1f, PolytropeIndex = 1.5f, Beta = 5.05f, Eccentricity = 0.9f, StartTidalRadii = 2.5f;
+        /// <summary>The hole's absorbing inner boundary in Schwarzschild radii: 3 r_s, the innermost stable circular orbit (Schwarzschild and PW).</summary>
+        public const float TdeAccretionRadiusInRs = 3f;
         /// <summary>Cap on the TDE time step in stellar dynamical times.</summary>
         public const float TdeMaxStepPerDynamicalTime = 1f / 40f;
 
@@ -85,7 +89,7 @@ namespace GravitySimulator.Sph
         {
             SphPresetKind.CollapsingCloud => "Collapsing cloud (M☉, pc)",
             SphPresetKind.CollidingClouds => "Colliding clouds (M☉, pc)",
-            _ => "Star near a black hole (white dwarf; M☉, R☉)",
+            _ => "Sun near a black hole (M☉, R☉)",
         };
 
         public static SphScenario Create(SphPresetKind kind, int count, int seed) => kind switch
@@ -233,29 +237,41 @@ namespace GravitySimulator.Sph
         };
 
         /// <summary>
-        /// A 0.6 M☉, 0.0125 R☉ white dwarf (an n = 1.5, γ = 5/3 polytrope, as non-relativistic degenerate
-        /// matter is; Lane-Emden profile, hydrostatic u) relaxed with damping, then launched from 1.5 tidal
-        /// radii on an eccentric (e = 0.8) orbit with pericentre r_t/β (β = 5) around a 1000 M☉ black
-        /// hole: the white dwarf - intermediate-mass black hole disruption of Rosswog, Ramirez-Ruiz &amp; Hix
-        /// (2009, ApJ 695, 404; they ran β up to 12), on a bound orbit as in the eccentric TDEs of
-        /// Hayasaki, Stone &amp; Loeb (2013, MNRAS 434, 909).
-        /// <para>What changed and why (the previous setup was the Sun, a 10⁵ M☉ hole, β = 1.5, parabolic):
-        /// there r_t ≈ 46 R*, so the star was a dot on screen; the most bound debris came back only after
-        /// ~(M_bh/M*)^½ ≈ 300 stellar dynamical times (days, ~10⁵ steps); and with r_t ≈ 110 r_s and no
-        /// relativistic precession the returning debris never came near the hole's accretion radius.
-        /// Here r_t = 12 R*, so the star is big next to its orbit; the bound orbit (period ≈ 6 stellar
-        /// dynamical times ≈ 18 s, binding energy ~6x the tidal energy spread) brings all the debris back
-        /// within seconds of simulated time; and r_t ≈ 35 r_s, so at β = 5 the pericentre (7 r_s) lies
-        /// just outside the 6 r_s accretion radius and the spread in the debris' angular momentum carries
-        /// part of the returning stream inside it. Headless at 50k particles: pericentre at ~10 s of wall
-        /// time, the hole starts swallowing at ~25 s (~1% of the star by 30 s).</para>
+        /// The Sun (1 M☉, 1 R☉; an n = 1.5, γ = 5/3 polytrope with the Lane-Emden profile and hydrostatic u,
+        /// relaxed with damping) launched from 2.5 tidal radii, inbound, on a bound e = 0.9 orbit with
+        /// pericentre r_t/β (β = 5.05) around a 10⁶ M☉ black hole - the eccentric-TDE setup of Hayasaki,
+        /// Stone &amp; Loeb (2013, MNRAS 434, 909: 10⁶ M☉, β = 5, e ≈ 0.8-0.98, Paczyński-Wiita potential).
+        /// <para>Why n = 1.5 and not n = 3 (the Eddington standard model, closer to the Sun's radiative
+        /// interior): an n = 3 star's 54x central density cuts the Courant step ~2.5x and the steps/s
+        /// ~2x, which pushed the first pericentre to ~36 s of viewing and the first fallback past a
+        /// minute. n = 1.5 (as for the convective envelopes of low-mass stars; Guillochon &amp;
+        /// Ramirez-Ruiz 2013 ran both) keeps the encounter watchable.</para>
+        /// <para>How the hole swallows without full relativity: (1) the hole pulls the gas with the
+        /// Paczyński &amp; Wiita (1980) potential Φ = -GM/(r - r_s) (<see cref="SphParameters.PseudoNewtonianBlackHoles"/>),
+        /// which has a Schwarzschild-like capture threshold - orbits whose Newtonian pericentre is below
+        /// ~4 r_s (angular momentum below 4GM/c) plunge - and apsidal precession (2π r_s/p per orbit to
+        /// leading order). (2) An absorbing inner boundary at 3 r_s, the innermost stable circular orbit
+        /// (<see cref="TdeAccretionRadiusInRs"/>): gas inside is accreted unconditionally, standing in for
+        /// the unresolved plunge/disc accretion, as SPH TDE work uses an absorbing inner boundary (e.g.
+        /// Lodato, King &amp; Pringle 2009; Guillochon &amp; Ramirez-Ruiz 2013). The rendered sphere is
+        /// still the r_s horizon; 3 r_s is only the sink rule. With r_t = 100 R☉ ≈ 24 r_s and β = 5.05
+        /// the pericentre is 4.7 r_s, just above the capture threshold: the low-angular-momentum side of
+        /// the stretched star is captured directly at the first passage (partial direct capture, Kesden
+        /// 2012) and the rest forms the tidal stream. (3) The bound orbit (period ≈ 10 stellar dynamical
+        /// times) brings the stream back within the minute; its return passage, precessed by ~40°, adds
+        /// little more in that time - circularisation needs more orbits than a minute of viewing holds.
+        /// Headless at 50k particles: pericentre at ~20 s of wall time, ~31% of the star swallowed by
+        /// 24 s, flat afterwards (the app, which also renders, runs ~1.5x slower). The capture fraction is very sensitive to β (4.95: 2%, 5.05: 32%).</para>
+        /// <para>Before this the preset was a white dwarf and a 1000 M☉ Newtonian hole; before that the
+        /// Sun, a 10⁵ M☉ hole and β = 1.5 on a parabolic orbit (fallback after days, never swallowed).</para>
         /// </summary>
         public static SphScenario TidalDisruption(int count, int seed)
         {
             var units = SolarRadiusUnits;
             float rStar = StarRadius * (float)units.SolarRadius;
             const float gamma = 5f / 3f;
-            var (xi1, table) = LaneEmden(1.5);
+            const double nPoly = PolytropeIndex;
+            var (xi1, table) = LaneEmden(nPoly);
             float eta = SphKernel.DefaultEta;
             float m = StarMass / count;
             var rng = new Random(seed);
@@ -280,7 +296,7 @@ namespace GravitySimulator.Sph
             double alpha = rStar / xi1;
             double mu1 = table[^1].Mu;
             double rhoC = StarMass / (4 * Math.PI * alpha * alpha * alpha * mu1);
-            double kPoly = 4 * Math.PI * alpha * alpha * Math.Pow(rhoC, 1.0 - 1.0 / 1.5) / 2.5;
+            double kPoly = 4 * Math.PI * alpha * alpha * Math.Pow(rhoC, 1.0 - 1.0 / nPoly) / (nPoly + 1); // P = K ρ^(1+1/n)
             for (int i = 0; i < count; i++)
             {
                 Vector3 p = pts[i];
@@ -288,8 +304,8 @@ namespace GravitySimulator.Sph
                 double frac = (i + 0.5) / count;              // enclosed mass fraction, by rank
                 double xi = InverseMass(table, frac * mu1);
                 double theta = ThetaAt(table, xi);
-                double rho = rhoC * Math.Pow(Math.Max(theta, 1e-4), 1.5);
-                double u = kPoly * Math.Pow(rho, gamma - 1.0) / (gamma - 1.0);
+                double rho = rhoC * Math.Pow(Math.Max(theta, 1e-4), nPoly);
+                double u = kPoly * Math.Pow(rho, 1.0 / nPoly) / (gamma - 1.0); // u = P / ((γ-1) ρ)
                 Vector3 dir = r0 > 0f ? p / r0 : Vector3.UnitX;
                 gas.Add(dir * (float)(alpha * xi), Vector3.Zero, m, (float)u, eta * MathF.Cbrt(m / (float)rho));
             }
@@ -315,19 +331,20 @@ namespace GravitySimulator.Sph
             sinks.Add(Vector3.Zero, Vector3.Zero, BlackHoleMass, rs, BodyClass.BlackHole);
 
             float hStar = eta * MathF.Cbrt(m / (float)(StarMass / (4.0 / 3.0 * Math.PI * rStar * rStar * rStar)));
-            float tStar = MathF.Sqrt(rStar * rStar * rStar / StarMass); // dynamical time of the star (~2.9 s)
-            float rAcc = 6f * rs;
+            float tStar = MathF.Sqrt(rStar * rStar * rStar / StarMass); // dynamical time of the Sun (~26.5 min)
+            float rAcc = TdeAccretionRadiusInRs * rs;
             var p0 = new SphParameters
             {
                 Eos = EquationOfState.IdealGas,
                 Gamma = gamma,
-                HMin = hStar / 6f,
+                HMin = hStar / 3f,   // the stream compressed at pericentre would otherwise force tiny steps
                 HMax = 1.5f * hStar, // the 2 h_max grid cost grows with the h contrast
                 SinkDensity = float.PositiveInfinity,
                 SinkRadius = 0f,
                 MinInternalEnergy = 5e-6f * StarMass / rStar, // ~10⁻⁵ of the star's central u
                 Theta = 0.6f,
                 MaxTimeStep = TdeMaxStepPerDynamicalTime * tStar, // spread-out debris still resolves the hole's accretion radius
+                PseudoNewtonianBlackHoles = true,
             };
             return new SphScenario
             {
@@ -347,11 +364,14 @@ namespace GravitySimulator.Sph
                 Gas = gas,
                 Sinks = sinks,
                 BlackHoleAccretionRadius = rAcc,
+                PreciseBlackHoleAccretion = true,
                 Units = units,
-                // Frames the start point (2 r_t), the pericentre and the inner stream: the star is a
-                // few percent of the view across, the returning debris and the hole fill the middle.
-                CameraDistance = 4.5f * rt,
-                ExposureRadius = rt,
+                // Frames the start point (2.5 r_t), the pericentre and the stream out to apocentre (3.8 r_t). The Sun is ~1/100 of r_t,
+                // so here it is a bright dot of a few pixels; the stream and the hole fill the middle.
+                CameraDistance = 7f * rt,
+                CameraYaw = -MathF.PI / 2f - 0.66f, // the long axis of the orbit along the screen diagonal
+                CameraPitch = 1.45f,                // nearly face-on to the orbit plane
+                ExposureRadius = 3f * rt,           // bright enough that the thinning stream stays visible
                 SupernovaDu = 0f,
                 EjectaU = 0f,
                 RelaxSteps = 30,
