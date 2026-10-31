@@ -264,7 +264,7 @@ Across seeds 1–4, the differences are mostly within the seed-to-seed spread:
 Clump counts run about 6% lower, consistent with chained merges now taking an extra step each. The spec's bar of at
 least 50 clumps still holds.
 
-## Amendment 2026-10-31: GPU gravity, ceiling raised to 450,000
+## Amendment 2026-10-31: GPU gravity, ceiling raised to 350,000
 
 Request (task brief, paraphrasing the human): move Planet formation's gravity onto the GPU, then re-measure and
 put the ceiling where the simulation starts to become unaffordable (about 5 steps/s held), with fragments still
@@ -327,22 +327,40 @@ is part of this change.
 
 ### New ceiling
 
-`SimulationParameters.DefaultMaxLiveParticles` = **450,000** with GPU gravity. The new
-`SimulationParameters.CpuMaxLiveParticles` = **150,000** is used when the app falls back to the CPU. The Particles
-box maximum follows whichever ceiling is active.
+`SimulationParameters.DefaultMaxLiveParticles` = **350,000** with GPU gravity. The new
+`SimulationParameters.CpuMaxLiveParticles` = **150,000** (the old value) is used when the app falls back to the
+CPU. The Particles box maximum follows whichever ceiling is active.
 
-Held at the ceiling (`DebrisCloud_HeldAtCeiling`: the debris cloud loaded at the ceiling, 30 steps timed):
+Two loads were held at the ceiling. In each, fragments keep the live count pinned at the ceiling.
 
-| ceiling | backend | live | steps/s |
+- **Debris cloud** (`DebrisCloud_HeldAtCeiling`): the cloud above, loaded at the ceiling, 30 steps timed.
+- **Light disc** (`LightDisc_HeldAtCeiling`): the 0.1% disc loaded at the ceiling, steps 101–200 timed. Its grains
+  barely merge, so nearly every contact sprays fragments. It folds about 100k fragments per step, and collisions
+  are about half its GPU step.
+
+| ceiling | backend | debris cloud steps/s | light disc steps/s (tree / gravity / collisions ms) |
 |---|---|---|---|
-| 150,000 | CPU | 144k → 150k | 4.6 |
-| 150,000 | GPU | 150k → 150k | 17.2 |
-| 400,000 | GPU | 384k → 400k | 5.9 |
-| 450,000 | GPU | 424k → 450k | **5.3** |
-| 500,000 | GPU | 463k → 500k | 4.6 |
+| 150,000 | CPU | 4.4 | 4.1 (68 / 132 / 39) |
+| 150,000 | GPU | 15.8 | 14.5 (20 / 24 / 24) |
+| 300,000 | GPU | — | 5.7 (45 / 50 / 79) |
+| 350,000 | GPU | 5.7 | **5.0** (50 / 54 / 94) |
+| 400,000 | GPU | 5.2 (first run: 5.9) | 3.9 (62 / 66 / 128) |
+| 450,000 | GPU | 4.6 (first run: 5.3) | 3.3 (70 / 75 / 155) |
+| 500,000 | GPU | 4.0 (first run: 4.6) | — |
 
-450,000 is the largest round count that holds the "about 5 steps/s" bar that set 100,000 and then 150,000.
-500,000 falls below it, at 4.6 steps/s.
+Repeat runs vary by 10–15% on this laptop. Rule applied: the largest round count at which **both** loads hold about
+5 steps/s. That is 350,000. The debris cloud alone would have allowed 400,000–450,000, but the light disc drops to
+3.3–3.9 steps/s there. In the app, the light disc at 450,000 ran at 3.4 steps/s, against 3.3 headless, so rendering
+on the same GPU costs little. By the same rule, the CPU's 150,000 sits a little below the bar on the light disc
+(4.1). It is unchanged here.
+
+**Collision bug found at the higher counts.** In a 450k 10% disc on the GPU path, a super-catastrophic hit
+rounded its largest remnant to 0 against the total, with all the debris in one fragment. The remnant's escape
+speed became 0/0, and the NaN velocities then broke the tree. Every particle vanished from view, and the star
+drifted. The bug is not GPU-specific; it is the collision code's, and more particles make it likely sooner. Fixed
+in `CollisionResolver.EmitFragments`: the remnant slot is left dead and compacted, and the fragments use the
+system's escape speed. Regression test `SuperCatastrophic_RemnantRoundsToZero_StaysFiniteAndConserved`. The
+MergeOrBounce goldens are unchanged.
 
 ### Clumping check, GPU vs CPU (10% disc, 50k, 1,500 steps, Outcomes; `GpuVsCpuClumpingTests`)
 
@@ -356,5 +374,5 @@ Held at the ceiling (`DebrisCloud_HeldAtCeiling`: the debris cloud loaded at the
 GPU runs do not reproduce CPU runs bit for bit. Forces differ in the last bits, and the tree-order reorder changes
 the order in which contacts are resolved. Clumps of 10+ grains average 118.5 on the GPU against 123 on the CPU,
 about 4% fewer. That is inside the seed-to-seed spread (110–127 against 118–132), and four seeds cannot tell it
-apart from noise. Clumps of 100+ grains average 62 on both. The spec's bar of at least 50 clumps holds on both
+apart from noise. Clumps of 100+ grains average 61 on the CPU and 62 on the GPU. The spec's bar of at least 50 clumps holds on both
 backends.
