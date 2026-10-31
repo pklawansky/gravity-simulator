@@ -203,6 +203,8 @@ namespace GravitySimulator.Sph
                 _sim.Load(scenario);
                 _renderer.Configure(scenario);
                 _camera.Distance = scenario.CameraDistance;
+                if (scenario.CameraYaw is float yaw) _camera.Yaw = yaw;
+                if (scenario.CameraPitch is float pitch) _camera.Pitch = pitch;
                 ApplyParameters();
                 _error = null;
             }

@@ -27,6 +27,9 @@ namespace GravitySimulator.Sph
         public float BlackHoleAccretionRadius { get; init; }
         public UnitSystem Units { get; init; }
         public float CameraDistance { get; init; }
+        /// <summary>Camera yaw and pitch set on load (radians), or null to keep the current view direction.</summary>
+        public float? CameraYaw { get; init; }
+        public float? CameraPitch { get; init; }
         /// <summary>Radius whose mean column density sets the exposure (0 = from the initial gas).</summary>
         public float ExposureRadius { get; init; }
         /// <summary>Δu given to gas at the centre of a supernova blast (falls off linearly to the blast radius).</summary>
@@ -72,6 +75,9 @@ namespace GravitySimulator.Sph
         public static int DefaultCount(SphPresetKind kind) => kind switch
         {
             SphPresetKind.TidalDisruption => 50_000,
+            // 150k: the shock layer fragments ~300 steps after the start, ~25 s at the ~11 steps/s this
+            // count runs at in the app (200k: ~9 steps/s, ~40 s).
+            SphPresetKind.CollidingClouds => 150_000,
             _ => 200_000,
         };
 
@@ -196,6 +202,13 @@ namespace GravitySimulator.Sph
                 Sinks = new ParticleSystem(256),
                 Units = UnitSystem.SolarParsec,
                 CameraDistance = 2.6f,
+                // ~50° to the shock layer (which lies in the yz plane): the collision and the layer's
+                // fragments are both visible (the default view looks along the layer, edge-on).
+                CameraYaw = -MathF.PI / 2f + 0.8f,
+                CameraPitch = 0.5f,
+                // Exposure from one cloud's radius (not both clouds' rms extent), ~3.5x darker: the dense
+                // shock layer stays below white, so its fragments and the stars forming in them show.
+                ExposureRadius = CollideRadius,
                 SupernovaDu = 2000f,
                 EjectaU = 500f,
                 Headroom = Headroom(count),
