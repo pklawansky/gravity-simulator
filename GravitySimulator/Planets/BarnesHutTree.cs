@@ -253,6 +253,88 @@ namespace GravitySimulator.Planets
             return d * (m * inv * inv * inv);
         }
 
+        /// <summary>
+        /// Writes the tree built by the last <see cref="Build"/> into <paramref name="dst"/> in the
+        /// flattened, stackless next/skip layout used by the GPU walk (see <see cref="Sph.FlatTree"/>).
+        /// Leaves carry their body's softening length from <paramref name="bodySoftening"/> (indexed
+        /// like the particle system), or <see cref="Softening"/> when it is null.
+        /// </summary>
+        public void Flatten(Sph.FlatTree dst, float[] bodySoftening = null)
+        {
+            int count = _nodeCount;
+            dst.EnsureCapacity(count);
+            dst.Count = count;
+            if (_subtree.Length < count) { _subtree = new int[_half.Length]; _soft2 = new float[_half.Length]; }
+            if (_flatStack.Length < 8 * (MaxDepth + 2) + 8) _flatStack = new int[8 * (MaxDepth + 2) + 8];
+
+            // Subtree sizes: children have larger indices than parents, so a reverse sweep is post-order.
+            for (int n = count - 1; n >= 0; n--)
+            {
+                int size = 1;
+                int b0 = _body[n];
+                if (b0 == Internal)
+                {
+                    int s = n * 8;
+                    float ms2 = 0f;
+                    for (int k = 0; k < 8; k++)
+                    {
+                        int c = _child[s + k];
+                        if (c < 0) continue;
+                        size += _subtree[c];
+                        ms2 += _mass[c] * _soft2[c];
+                    }
+                    _soft2[n] = _mass[n] > 0f ? ms2 / _mass[n] : 0f;
+                }
+                else
+                {
+                    float eps = b0 >= 0 && bodySoftening != null ? bodySoftening[b0] : Softening;
+                    _soft2[n] = eps * eps;
+                }
+                _subtree[n] = size;
+            }
+
+            // Pre-order emission: pop a node, give it the next index, push its children in reverse
+            // so child 0 is emitted first (and lands at index + 1).
+            int[] stack = _flatStack;
+            int sp = 0, next = 0;
+            if (count > 0) stack[sp++] = 0;
+            while (sp > 0)
+            {
+                int n = stack[--sp];
+                int idx = next++;
+                int b = _body[n];
+                // A single-body leaf stores the body's exact position ((m x)/m can round), so the walk's
+                // zero-distance self test is exact.
+                Vector3 com = b >= 0 && _nextInLeaf[b] < 0 ? _pos[b] : _com[n];
+                dst.ComMass[idx] = new Vector4(com, _mass[n]);
+                dst.Skip[idx] = idx + _subtree[n];
+                if (b == Internal)
+                {
+                    Vector3 c = _centre[n];
+                    dst.CentreHalf[idx] = new Vector4(c, _half[n]);
+                    dst.Soft2[idx] = _soft2[n];
+                    dst.Body[idx] = -1;
+                    int s = n * 8;
+                    for (int k = 7; k >= 0; k--)
+                    {
+                        int ch = _child[s + k];
+                        if (ch >= 0) stack[sp++] = ch;
+                    }
+                }
+                else
+                {
+                    // Leaf (possibly empty: mass 0).
+                    dst.CentreHalf[idx] = new Vector4(_centre[n], _half[n]);
+                    dst.Soft2[idx] = _soft2[n];
+                    dst.Body[idx] = Math.Max(b, 0);
+                }
+            }
+        }
+
+        private int[] _subtree = Array.Empty<int>();
+        private float[] _soft2 = Array.Empty<float>();
+        private int[] _flatStack = Array.Empty<int>();
+
         /// <summary>Exact all-pairs acceleration on body <paramref name="i"/> (reference for tests; O(N)).</summary>
         public static Vector3 DirectAcceleration(ParticleSystem ps, int i, float softening)
         {
