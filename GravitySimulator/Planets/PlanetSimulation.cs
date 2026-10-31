@@ -22,11 +22,11 @@ namespace GravitySimulator.Planets
         /// <summary>
         /// Outcomes: collision fragments may raise the live particle count up to this ceiling (or to the count at
         /// Load, if that is larger); at the ceiling, further fragments are folded into the largest fragment or the
-        /// remnant. Chosen from measured step cost on a 32-core machine (2026-10-31 amendment of the collision
-        /// outcomes spec): the largest count that still sustains about 5 steps/s.
+        /// remnant. Chosen from measured step cost on a 32-core machine ("faster collision sweep" amendment, 2026-10-31,
+        /// of the collision outcomes spec): the largest round count that still sustains about 5 steps/s.
         /// </summary>
         public int MaxLiveParticles { get; set; } = DefaultMaxLiveParticles;
-        public const int DefaultMaxLiveParticles = 100_000;
+        public const int DefaultMaxLiveParticles = 150_000;
         /// <summary>Upper bound on background-thread steps per second (0 = unlimited), so small systems stay watchable.</summary>
         public float MaxStepsPerSecond { get; set; } = 120f;
         /// <summary>

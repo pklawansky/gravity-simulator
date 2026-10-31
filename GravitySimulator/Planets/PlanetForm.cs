@@ -102,7 +102,7 @@ namespace GravitySimulator.Planets
             _preset.Items.AddRange(new object[] { "Disc around a star", "Spinning cloud", "Star-forming cloud (M\u2609, pc)", "Dense star cluster (M\u2609, pc)" });
             _preset.SelectedIndex = 0;
 
-            _count = new NumericUpDown { Minimum = 1_000, Maximum = 100_000, Increment = 10_000, Value = 50_000, Width = 220, ThousandsSeparator = true };
+            _count = new NumericUpDown { Minimum = 1_000, Maximum = SimulationParameters.DefaultMaxLiveParticles, Increment = 10_000, Value = 50_000, Width = 220, ThousandsSeparator = true };
 
             _timeSpeed = new TrackBar { Minimum = -4, Maximum = 4, Value = 0, TickFrequency = 1, Width = 220 };
             _timeSpeedLabel = new Label { AutoSize = true };
