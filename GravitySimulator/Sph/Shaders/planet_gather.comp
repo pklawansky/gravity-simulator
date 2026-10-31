@@ -1,0 +1,10 @@
+// GPU octree build: bodies into key order (dst[k] = src[order[k]]).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Order { uint order[]; };
+layout(std430, binding = 1) readonly buffer Src { vec4 src[]; };
+layout(std430, binding = 2) writeonly buffer Dst { vec4 dst[]; };
+void main()
+{
+    uint k = gl_GlobalInvocationID.x;
+    if (k < uCount) dst[k] = src[order[k]];
+}

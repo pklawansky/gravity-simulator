@@ -93,21 +93,20 @@ namespace GravitySimulator.Planets
     {
         /// <summary>Opening kick + drift.</summary>
         public double KickDrift { get; init; }
-        /// <summary>Octree build (CPU, both gravity backends).</summary>
+        /// <summary>Octree build on the CPU (CPU backend; the GPU backend builds its tree on the GPU, see <see cref="GpuTreeBuild"/>).</summary>
         public double TreeBuild { get; init; }
         /// <summary>
         /// Gravity (CPU walk, or GPU flatten + upload + walk + read-back), force contributors and the closing kick;
         /// on the GPU path also the reorder of the bodies into tree order.
         /// </summary>
         public double Gravity { get; init; }
-        /// <summary>Of <see cref="Gravity"/>, GPU path only: flatten, pack and order on the CPU.</summary>
+        /// <summary>Of <see cref="Gravity"/>, GPU path only: bounding cube and body packing on the CPU.</summary>
         public double GpuFlatten { get; init; }
-        /// <summary>Of <see cref="Gravity"/>, GPU path only: upload, walk and read-back on the GL thread.</summary>
+        /// <summary>Of <see cref="Gravity"/>, GPU path only: upload, tree build, walk and read-back on the GL thread.</summary>
         public double GpuWalk { get; init; }
-        /// <summary>Of <see cref="GpuFlatten"/>: the tree flatten alone (the rest is packing positions and nodes).</summary>
-        public double GpuTreeFlatten { get; init; }
-        /// <summary>Of <see cref="GpuWalk"/>: upload (to glFinish), walk kernel (to glFinish), read-back and thread hand-off.</summary>
+        /// <summary>Of <see cref="GpuWalk"/>: upload (to glFinish), octree build on the GPU, walk kernel (to glFinish), read-back and thread hand-off.</summary>
         public double GpuUpload { get; init; }
+        public double GpuTreeBuild { get; init; }
         public double GpuKernel { get; init; }
         public double GpuReadback { get; init; }
         /// <summary>Of <see cref="Gravity"/>, GPU path only: scattering the accelerations, and the reorder into tree order.</summary>
@@ -222,6 +221,10 @@ namespace GravitySimulator.Planets
 
         /// <summary>Which gravity backend is active, for the readout (e.g. "GPU (NVIDIA ...)" or "CPU Barnes-Hut").</summary>
         public string GravityBackend => _gravityBackend;
+        /// <summary>Octree nodes of the last GPU gravity build (0 on the CPU path).</summary>
+        public int LastGpuNodeCount => _gpu?.LastNodeCount ?? 0;
+        /// <summary>GPU backend only: bodies per octree leaf at most (see <see cref="GpuGravity.LeafCapacity"/>).</summary>
+        public int GpuLeafCapacity { get => _gpu?.LeafCapacity ?? 0; set { if (_gpu != null) _gpu.LeafCapacity = value; } }
         /// <summary>True while gravity runs on the GPU.</summary>
         public bool GpuGravityActive => _gpu != null;
 
@@ -319,7 +322,7 @@ namespace GravitySimulator.Planets
 
             RunChunks(_kickDriftChunk);       // v += a dt/2 ; x += v dt
             long t1 = Stopwatch.GetTimestamp();
-            BuildTree();
+            if (_gpu == null) BuildTree();    // the GPU backend builds its own tree
             long t2 = Stopwatch.GetTimestamp();
             ForcesAndKick();                  // a = F(x) ; v += a dt/2
             long t3 = Stopwatch.GetTimestamp();
@@ -373,7 +376,7 @@ namespace GravitySimulator.Planets
                 Gravity = Ms(t2, t3),
                 GpuFlatten = _lastGpu ? _gpu?.LastFlattenMs ?? 0 : 0,
                 GpuWalk = _lastGpu ? _gpu?.LastGpuMs ?? 0 : 0,
-                GpuTreeFlatten = _lastGpu ? _gpu?.LastTreeFlattenMs ?? 0 : 0,
+                GpuTreeBuild = _lastGpu ? _gpu?.LastBuildMs ?? 0 : 0,
                 GpuUpload = _lastGpu ? _gpu?.LastUploadMs ?? 0 : 0,
                 GpuKernel = _lastGpu ? _gpu?.LastKernelMs ?? 0 : 0,
                 GpuReadback = _lastGpu ? _gpu?.LastReadbackMs ?? 0 : 0,
@@ -391,8 +394,11 @@ namespace GravitySimulator.Planets
         private bool _lastGpu;
         private double _lastReorderMs;
 
+        private bool _treeStale; // the CPU tree does not match the state (the GPU backend skipped it)
+
         private void BuildTree()
         {
+            _treeStale = false;
             _tree.Theta = _p.Theta;
             _tree.Softening = _p.Softening;
             _tree.Build(_ps);
@@ -400,7 +406,7 @@ namespace GravitySimulator.Planets
 
         private void ComputeAccelerations()
         {
-            BuildTree();
+            if (_gpu == null) BuildTree();
             _halfDt = 0f;
             ForcesAndKick();
         }
@@ -411,6 +417,7 @@ namespace GravitySimulator.Planets
         private void ForcesAndKick()
         {
             _lastGpu = _gpu != null && TryGpuGravity();
+            if (!_lastGpu && _gpu == null && _treeStale) BuildTree(); // the GPU just failed: the CPU tree was not built
             if (_lastGpu)
             {
                 foreach (var f in ForceContributors) f.AddAccelerations(_ps);
@@ -434,7 +441,8 @@ namespace GravitySimulator.Planets
         {
             try
             {
-                _gpu.Compute(_tree, _ps, _p.Theta, _p.Softening);
+                _gpu.Compute(_ps, _p.Theta, _p.Softening);
+                _treeStale = true;
                 return true;
             }
             catch (Exception ex)
@@ -442,6 +450,7 @@ namespace GravitySimulator.Planets
                 _gpu.Dispose();
                 _gpu = null;
                 _gravityBackend = CpuBackendName + " (GPU failed: " + Shorten(ex.Message) + ")";
+                _treeStale = true;
                 return false;
             }
         }

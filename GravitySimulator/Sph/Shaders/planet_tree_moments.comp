@@ -1,0 +1,40 @@
+// GPU octree build, step 3 (bottom-up, deepest level first): mass and centre of mass of every node of
+// level uLevel, from its bodies (a leaf) or its children (summed in octant order, so deterministic).
+// As the CPU tree: a one-body leaf keeps the body's exact position; a massless node sits at its centre.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Body { vec4 body[]; };     // key order: xyz, mass
+layout(std430, binding = 1) readonly buffer NInfo { uvec4 nInfo[]; };
+layout(std430, binding = 2) readonly buffer NGeom { vec4 nGeom[]; };
+layout(std430, binding = 3) buffer NMom { vec4 nMom[]; };
+layout(std430, binding = 4) readonly buffer Ctrl { uint ctrl[]; };
+uniform uint uLevel;
+void main()
+{
+    uint nd = ctrl[2u + uLevel] + gl_GlobalInvocationID.x;
+    if (nd >= ctrl[3u + uLevel]) return;
+    uvec4 info = nInfo[nd];
+    info.y = min(info.y, uCount); // never needed after a complete build; guards an overflowed one
+    uint cc = info.z & 15u;
+    float m = 0.0;
+    vec3 mx = vec3(0.0);
+    if (cc == 0u)
+    {
+        if (info.y - info.x == 1u) { nMom[nd] = body[info.x]; return; }
+        for (uint k = info.x; k < info.y; k++)
+        {
+            vec4 b = body[k];
+            m += b.w;
+            mx += b.w * b.xyz;
+        }
+    }
+    else
+    {
+        for (uint k = info.w; k < info.w + cc; k++)
+        {
+            vec4 c = nMom[k];
+            m += c.w;
+            mx += c.w * c.xyz;
+        }
+    }
+    nMom[nd] = vec4(m > 0.0 ? mx / m : nGeom[nd].xyz, m);
+}

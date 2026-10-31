@@ -33,14 +33,15 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Same bound as the CPU tree's own test (theta 0.6, 3000-particle uniform cloud: mean relative error
-    /// &lt; 1.5%, p99 &lt; 5% against the direct sum), and the GPU walk must agree with the CPU walk to float
-    /// rounding: it is the same tree, the same acceptance test and the same softening, summed in another order.
+    /// The GPU-built octree against the exact sum, at theta 0.6 (3000-particle uniform cloud and a 4000-body
+    /// disc): at the default leaf capacity its mean, p99 and max relative errors must be no worse than the CPU
+    /// tree's (within 2% of them, for float summation order) and within the CPU tree's own bound (mean &lt; 1.5%,
+    /// p99 &lt; 5%). At leaf capacity 1 it is the CPU tree, so it must agree with the CPU walk to float rounding.
     /// </summary>
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Theta06_MatchesCpuTreeAndIsWithinStatedErrorOfDirectSum(bool disc)
+    public void Theta06_GpuTreeIsNoWorseThanCpuTreeAgainstDirectSum(bool disc)
     {
         using var gpu = Gpu();
         var ps = disc ? Presets.DiscAroundStar(4000, seed: 3, discMassFraction: 0.1f) : TestHelpers.RandomCloud(3000, seed: 1);
@@ -48,25 +49,39 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
         var tree = new BarnesHutTree(ps.Count) { Theta = 0.6f, Softening = soft };
         tree.Build(ps);
         var cpu = new Vector3[ps.Count];
-        for (int i = 0; i < ps.Count; i++) cpu[i] = tree.AccelerationAt(ps.Position[i], i);
-
-        gpu.Compute(tree, ps, 0.6f, soft);
-
-        var relCpu = new List<double>(); var relGpu = new List<double>(); var relPair = new List<double>();
+        var exact = new Vector3[ps.Count];
         for (int i = 0; i < ps.Count; i++)
         {
-            Vector3 exact = BarnesHutTree.DirectAcceleration(ps, i, soft);
-            Vector3 g = ps.Acceleration[i];
-            relCpu.Add((cpu[i] - exact).Length() / exact.Length());
-            relGpu.Add((g - exact).Length() / exact.Length());
-            relPair.Add((g - cpu[i]).Length() / cpu[i].Length());
+            cpu[i] = tree.AccelerationAt(ps.Position[i], i);
+            exact[i] = BarnesHutTree.DirectAcceleration(ps, i, soft);
         }
-        var c = Stats(relCpu); var gs = Stats(relGpu); var pr = Stats(relPair);
-        output.WriteLine($"{(disc ? "disc 4000" : "cloud 3000")}: CPU tree vs direct mean {c.Mean:E2} p99 {c.P99:E2} max {c.Max:E2}; " +
-                         $"GPU vs direct mean {gs.Mean:E2} p99 {gs.P99:E2} max {gs.Max:E2}; GPU vs CPU tree mean {pr.Mean:E2} p99 {pr.P99:E2} max {pr.Max:E2}");
-        Assert.True(gs.Mean < 0.015, $"GPU mean relative error {gs.Mean:E3}");
-        Assert.True(gs.P99 < 0.05, $"GPU p99 relative error {gs.P99:E3}");
-        Assert.True(pr.Max < 1e-4, $"GPU differs from the CPU tree by up to {pr.Max:E3} (relative)");
+        var relCpu = new List<double>();
+        for (int i = 0; i < ps.Count; i++) relCpu.Add((cpu[i] - exact[i]).Length() / exact[i].Length());
+        var c = Stats(relCpu);
+        string name = disc ? "disc 4000" : "cloud 3000";
+        output.WriteLine($"{name}: CPU tree vs direct mean {c.Mean:E2} p99 {c.P99:E2} max {c.Max:E2}; {tree.NodeCount} nodes");
+
+        foreach (int leaf in new[] { 1, 4, 8, 16, gpu.LeafCapacity }.Distinct())
+        {
+            gpu.LeafCapacity = leaf;
+            gpu.Compute(ps, 0.6f, soft);
+            var relGpu = new List<double>(); var relPair = new List<double>();
+            for (int i = 0; i < ps.Count; i++)
+            {
+                Vector3 g = ps.Acceleration[i];
+                relGpu.Add((g - exact[i]).Length() / exact[i].Length());
+                relPair.Add((g - cpu[i]).Length() / cpu[i].Length());
+            }
+            var gs = Stats(relGpu); var pr = Stats(relPair);
+            output.WriteLine($"{name} leaf {leaf}: GPU vs direct mean {gs.Mean:E2} p99 {gs.P99:E2} max {gs.Max:E2}; " +
+                             $"GPU vs CPU tree mean {pr.Mean:E2} p99 {pr.P99:E2} max {pr.Max:E2}; {gpu.LastNodeCount} nodes");
+            Assert.True(gs.Mean < 0.015, $"leaf {leaf}: GPU mean relative error {gs.Mean:E3}");
+            Assert.True(gs.P99 < 0.05, $"leaf {leaf}: GPU p99 relative error {gs.P99:E3}");
+            Assert.True(gs.Mean <= c.Mean * 1.02, $"leaf {leaf}: GPU mean {gs.Mean:E3} worse than the CPU tree's {c.Mean:E3}");
+            Assert.True(gs.P99 <= c.P99 * 1.02, $"leaf {leaf}: GPU p99 {gs.P99:E3} worse than the CPU tree's {c.P99:E3}");
+            Assert.True(gs.Max <= c.Max * 1.02, $"leaf {leaf}: GPU max {gs.Max:E3} worse than the CPU tree's {c.Max:E3}");
+            if (leaf == 1) Assert.True(pr.Max < 1e-4, $"leaf 1: GPU differs from the CPU tree by up to {pr.Max:E3} (relative)");
+        }
     }
 
     [SkippableFact]
@@ -74,9 +89,7 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
     {
         using var gpu = Gpu();
         var ps = TestHelpers.RandomCloud(500, seed: 2);
-        var tree = new BarnesHutTree(ps.Count) { Theta = 0f, Softening = Softening };
-        tree.Build(ps);
-        gpu.Compute(tree, ps, 0f, Softening);
+        gpu.Compute(ps, 0f, Softening);
         for (int i = 0; i < ps.Count; i++)
         {
             Vector3 exact = BarnesHutTree.DirectAcceleration(ps, i, Softening);
@@ -96,7 +109,7 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
         ps.Add(new Vector3(0f, 1f, 0), Vector3.Zero, 0f, 0.01f); // massless: not in the tree, still accelerated
         var tree = new BarnesHutTree(ps.Count) { Theta = 0.6f, Softening = Softening };
         tree.Build(ps);
-        gpu.Compute(tree, ps, 0.6f, Softening);
+        gpu.Compute(ps, 0.6f, Softening);
         foreach (int i in new[] { 100, 101 })
         {
             Vector3 cpu = tree.AccelerationAt(ps.Position[i], i);
@@ -108,7 +121,49 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Through <see cref="PlanetSimulation"/>: the accelerations at Load match the CPU tree's, and stepping on
+    /// Near-coincident pairs at leaf capacity 1 give long single-child chains, far more nodes than the first
+    /// guess at the node buffers: the build must flag the overflow, grow and rebuild, and still give the CPU
+    /// tree's forces (same tree), with no corruption carried over into a later, smaller build.
+    /// </summary>
+    [SkippableFact]
+    public void NodeBufferOverflow_GrowsAndRebuilds()
+    {
+        using var gpu = Gpu();
+        gpu.LeafCapacity = 1;
+        var rng = new Random(9);
+        var ps = new ParticleSystem(6000);
+        for (int k = 0; k < 3000; k++)
+        {
+            var p = new Vector3((float)rng.NextDouble() * 4f - 2f, (float)rng.NextDouble() * 4f - 2f, (float)rng.NextDouble() * 4f - 2f);
+            ps.Add(p, Vector3.Zero, 1e-4f, 0.001f);
+            ps.Add(p + new Vector3(3e-5f, 1e-5f, -2e-5f), Vector3.Zero, 1e-4f, 0.001f);
+        }
+        var tree = new BarnesHutTree(ps.Count) { Theta = 0.6f, Softening = Softening };
+        tree.Build(ps);
+        gpu.Compute(ps, 0.6f, Softening);
+        output.WriteLine($"nodes: GPU {gpu.LastNodeCount}, CPU {tree.NodeCount}; first guess {2 * ps.Count + ps.Count / 2 + 4096}");
+        Assert.True(gpu.LastNodeCount > 2 * ps.Count + ps.Count / 2 + 4096, "the case must overflow the first node buffer");
+        double worst = 0;
+        for (int i = 0; i < ps.Count; i++)
+        {
+            Vector3 c = tree.AccelerationAt(ps.Position[i], i);
+            worst = Math.Max(worst, (ps.Acceleration[i] - c).Length() / c.Length());
+        }
+        output.WriteLine($"max relative difference to the CPU tree: {worst:E2}");
+        Assert.True(worst < 1e-3, $"after the rebuild the GPU differs from the CPU tree by up to {worst:E3}");
+
+        // A later, smaller build on the grown buffers.
+        var small = TestHelpers.RandomCloud(500, seed: 4);
+        gpu.Compute(small, 0f, Softening);
+        for (int i = 0; i < small.Count; i++)
+        {
+            Vector3 exact = BarnesHutTree.DirectAcceleration(small, i, Softening);
+            Assert.True((small.Acceleration[i] - exact).Length() / exact.Length() < 1e-4, $"small build, body {i}");
+        }
+    }
+
+    /// <summary>
+    /// Through <see cref="PlanetSimulation"/>: the accelerations at Load (GPU leaf capacity 1) match the CPU tree's, and stepping on
     /// the GPU stays on the GPU with finite state. (Positions are not compared after steps: collisions are
     /// sensitive to the last bit of the force, so the two runs may resolve a contact differently.)
     /// </summary>
@@ -123,31 +178,42 @@ public class PlanetGpuGravityTests(ITestOutputHelper output)
         Assert.False(gpu.GpuGravityActive); // the CPU tree is the default (the golden-hash tests rely on it)
         Assert.True(gpu.TryEnableGpuGravity(), gpu.GravityBackend);
         output.WriteLine("backend: " + gpu.GravityBackend);
+        int defaultLeaf = gpu.GpuLeafCapacity;
+        gpu.GpuLeafCapacity = 1; // at leaf capacity 1 the GPU-built octree is the CPU tree: compare to float rounding
         cpu.Load(start.Clone());
         gpu.Load(start.Clone());
         // The GPU path keeps the bodies in tree order, so match them by position (distinct in this disc).
         var byPos = new Dictionary<Vector3, int>();
         for (int i = 0; i < cpu.Particles.Count; i++) byPos[cpu.Particles.Position[i]] = i;
         Assert.Equal(cpu.Particles.Count, gpu.Particles.Count);
-        double worst = 0;
+        var rels = new List<double>();
         for (int k = 0; k < gpu.Particles.Count; k++)
         {
             int i = byPos[gpu.Particles.Position[k]];
             Vector3 c = cpu.Particles.Acceleration[i];
-            worst = Math.Max(worst, (c - gpu.Particles.Acceleration[k]).Length() / c.Length());
+            rels.Add((c - gpu.Particles.Acceleration[k]).Length() / c.Length());
             Assert.Equal(cpu.Particles.Mass[i], gpu.Particles.Mass[k]);
             Assert.Equal(cpu.Particles.Velocity[i], gpu.Particles.Velocity[k]);
         }
-        output.WriteLine($"max relative acceleration difference at Load: {worst:E2}");
-        Assert.True(worst < 1e-4, $"GPU and CPU accelerations differ by up to {worst:E3}");
+        var cpuTree = new BarnesHutTree(start.Count) { Theta = 0.6f, Softening = 0.005f };
+        cpuTree.Build(start);
+        var r = Stats(rels);
+        output.WriteLine($"relative acceleration difference at Load: mean {r.Mean:E2} p99 {r.P99:E2} max {r.Max:E2}; " +
+                         $"nodes GPU {gpu.LastGpuNodeCount}, CPU {cpuTree.NodeCount}");
+        // Same tree (same node count), so the same forces to float rounding; a centre of mass that differs in its
+        // last bit (another summation order) can flip one opening decision, which moves that body by ~1e-4.
+        Assert.Equal(cpuTree.NodeCount, gpu.LastGpuNodeCount);
+        Assert.True(r.P99 < 1e-5, $"GPU and CPU accelerations differ by {r.P99:E3} at p99");
+        Assert.True(r.Max < 1e-3, $"GPU and CPU accelerations differ by up to {r.Max:E3}");
 
+        gpu.GpuLeafCapacity = defaultLeaf;
         for (int k = 0; k < 20; k++) gpu.Step();
         Assert.True(gpu.GpuGravityActive, gpu.GravityBackend);
         var ps = gpu.Particles;
         for (int i = 0; i < ps.Count; i++)
             Assert.True(float.IsFinite(ps.Position[i].X + ps.Position[i].Y + ps.Position[i].Z + ps.Velocity[i].X), $"body {i} not finite");
         var t = gpu.LastPhaseTimes;
-        output.WriteLine($"GPU step: tree {t.TreeBuild:F1} ms, gravity {t.Gravity:F1} ms (flatten {t.GpuFlatten:F1}, GL {t.GpuWalk:F1}), collisions {t.Collisions:F1} ms");
+        output.WriteLine($"GPU step: tree {t.TreeBuild:F1} ms, gravity {t.Gravity:F1} ms (CPU prep {t.GpuFlatten:F1}, GL {t.GpuWalk:F1}: GPU tree build {t.GpuTreeBuild:F1}, walk {t.GpuKernel:F1}), collisions {t.Collisions:F1} ms");
     }
 
     [Fact]

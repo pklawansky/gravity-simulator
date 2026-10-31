@@ -1,0 +1,82 @@
+// GPU octree build, step 2 (top-down, one level per dispatch, as Bonsai): every node of level uLevel
+// holding more than uLeafCap bodies (and above the deepest level) splits into its non-empty octants.
+// Bodies are in key order, so each octant is a contiguous sub-range, found by binary search on the
+// level's octal digit. Children are allocated with an atomic counter (their order in this breadth-first
+// array is not deterministic; the pre-order layout written later is). Child cubes use the CPU tree's
+// float update (c +/- h, h = half / 2).
+// nInfo = (first body, end body, level << 4 | child count, first child); ctrl[0] = nodes, ctrl[1] = overflow,
+// ctrl[2 + L] = first node of level L (so level L is [ctrl[2 + L], ctrl[3 + L])).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer KeyHi { uint keyHi[]; };
+layout(std430, binding = 1) readonly buffer KeyLo { uint keyLo[]; };
+layout(std430, binding = 2) buffer NInfo { uvec4 nInfo[]; };
+layout(std430, binding = 3) buffer NGeom { vec4 nGeom[]; };
+layout(std430, binding = 4) buffer Ctrl { uint ctrl[]; };
+uniform uint uLevel;
+uniform uint uLeafCap;
+uniform uint uNodeCap;
+const uint MAX_LEVEL = 20u;
+
+uint digitAt(uint k, uint l)
+{
+    return l <= 10u ? (keyHi[k] >> (3u * (10u - l))) & 7u : (keyLo[k] >> (3u * (20u - l))) & 7u;
+}
+
+void main()
+{
+    uint L = uLevel;
+    uint nd = ctrl[2u + L] + gl_GlobalInvocationID.x;
+    if (nd >= ctrl[3u + L]) return;
+    uvec4 info = nInfo[nd];
+    uint s = info.x, e = info.y;
+    if (e - s <= uLeafCap || L >= MAX_LEVEL)
+    {
+        nInfo[nd].zw = uvec2(L << 4, 0u);
+        return;
+    }
+    uint l = L + 1u;
+    uint bound[9];
+    bound[0] = s;
+    bound[8] = e;
+    for (uint d = 1u; d < 8u; d++)
+    {
+        uint a = bound[d - 1u], b = e;
+        while (a < b)
+        {
+            uint mid = (a + b) >> 1;
+            if (digitAt(mid, l) < d) a = mid + 1u; else b = mid;
+        }
+        bound[d] = a;
+    }
+    uint cc = 0u;
+    for (uint d = 0u; d < 8u; d++) if (bound[d + 1u] > bound[d]) cc++;
+    uint base = atomicAdd(ctrl[0], cc);
+    if (base + cc > uNodeCap)
+    {
+        // Out of node slots: flag it (the host grows the buffers and rebuilds) and keep every slot this call
+        // claimed below the capacity a valid empty node, so no later pass reads an uninitialised range.
+        atomicMax(ctrl[1], 1u);
+        nInfo[nd].zw = uvec2(L << 4, 0u);
+        for (uint k = base; k < min(base + cc, uNodeCap); k++)
+        {
+            nInfo[k] = uvec4(s, s, (L + 1u) << 4, 0u);
+            nGeom[k] = nGeom[nd];
+        }
+        return;
+    }
+    nInfo[nd].zw = uvec2((L << 4) | cc, base);
+    vec4 g = nGeom[nd];
+    precise float h = g.w * 0.5;
+    uint k = base;
+    for (uint d = 0u; d < 8u; d++)
+    {
+        if (bound[d + 1u] <= bound[d]) continue;
+        precise vec3 c;
+        c.x = g.x + ((d & 1u) != 0u ? h : -h);
+        c.y = g.y + ((d & 2u) != 0u ? h : -h);
+        c.z = g.z + ((d & 4u) != 0u ? h : -h);
+        nInfo[k] = uvec4(bound[d], bound[d + 1u], l << 4, 0u);
+        nGeom[k] = vec4(c, h);
+        k++;
+    }
+}

@@ -1,50 +1,52 @@
-// Planet formation's Barnes-Hut gravity (G = 1): the same stackless walk of the flattened octree as
-// gravity.comp, with the CPU tree's physics (BarnesHutTree.AccelerationAt): one Plummer softening
-// eps^2 for every pair and node, a node is used whole when size^2 < theta^2 d^2 and the point is
-// outside its cube. A leaf at zero distance (the particle itself) is skipped. Thread k handles
-// pos[k] (the CPU orders the particles in tree-walk order so neighbouring threads walk alike).
+// Planet formation's Barnes-Hut gravity (G = 1) on the GPU-built octree (planet_tree_*.comp): a stackless
+// pre-order walk with the CPU tree's physics (BarnesHutTree.AccelerationAt): one Plummer softening eps^2
+// for every pair and node; a node (leaf or not) is used whole when size^2 < theta^2 d^2 and the point is
+// outside its cube; otherwise an internal node is opened and a leaf's bodies are summed one by one,
+// skipping the body itself (by index). Thread k handles body k of the key-ordered array.
 layout(local_size_x = 128) in;
-layout(std430, binding = 0) readonly buffer Pos { vec4 pos[]; };
+layout(std430, binding = 0) readonly buffer Body { vec4 body[]; };       // key order: xyz, mass
 layout(std430, binding = 1) writeonly buffer AccOut { vec4 accOut[]; };
-layout(std430, binding = 2) readonly buffer NodeA { vec4 comMass[]; };
-layout(std430, binding = 3) readonly buffer NodeB { vec4 centreHalf[]; };
-layout(std430, binding = 4) readonly buffer NodeC { vec4 links[]; };     // skip (int bits), body (int bits), soft^2
-uniform uint uNodeCount;
+struct Node { vec4 comMass; vec4 centreHalf; uvec4 link; };   // link = (skip, first body, bodies, leaf)
+layout(std430, binding = 2) readonly buffer Nodes { Node nodes[]; };
+layout(std430, binding = 3) readonly buffer Ctrl { uint ctrl[]; };
+uniform uint uNodeCap;
 uniform float uTheta2;
 uniform float uEps2;
 void main()
 {
     uint i = gl_GlobalInvocationID.x;
     if (i >= uCount) return;
-    vec3 p = pos[i].xyz;
+    vec3 p = body[i].xyz;
     vec3 acc = vec3(0.0);
+    uint total = min(ctrl[0], uNodeCap);
     uint n = 0u;
-    while (n < uNodeCount)
+    while (n < total)
     {
-        vec4 cm = comMass[n];
-        vec4 lk = links[n];
-        uint skip = uint(floatBitsToInt(lk.x));
-        int body = floatBitsToInt(lk.y);
+        vec4 cm = nodes[n].comMass;
+        vec4 ch = nodes[n].centreHalf;
+        uvec4 lk = nodes[n].link;
         vec3 d = cm.xyz - p;
         float d2 = dot(d, d);
-        if (body >= 0)
-        {
-            if (d2 > 0.0 && cm.w > 0.0)
-            {
-                float inv = 1.0 / sqrt(d2 + uEps2);
-                acc += d * (cm.w * inv * inv * inv);
-            }
-            n = skip;
-            continue;
-        }
-        vec4 ch = centreHalf[n];
         float size = 2.0 * ch.w;
         bool inside = all(lessThanEqual(abs(p - ch.xyz), vec3(ch.w)));
         if (size * size < uTheta2 * d2 && !inside)
         {
             float inv = 1.0 / sqrt(d2 + uEps2);
             acc += d * (cm.w * inv * inv * inv);
-            n = skip;
+            n = max(lk.x, n + 1u);
+        }
+        else if (lk.w != 0u)
+        {
+            uint e = min(lk.y + lk.z, uCount);
+            for (uint j = lk.y; j < e; j++)
+            {
+                if (j == i) continue;
+                vec4 b = body[j];
+                vec3 dj = b.xyz - p;
+                float inv = 1.0 / sqrt(dot(dj, dj) + uEps2);
+                acc += dj * (b.w * inv * inv * inv);
+            }
+            n = max(lk.x, n + 1u);
         }
         else n++;
     }

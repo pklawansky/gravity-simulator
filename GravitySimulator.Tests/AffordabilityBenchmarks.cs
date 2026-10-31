@@ -166,33 +166,41 @@ public class AffordabilityBenchmarks(ITestOutputHelper output)
     /// warm-up steps, with every sub-phase of <see cref="PlanetSimulation.LastPhaseTimes"/> averaged.
     /// </summary>
     [SkippableTheory]
-    [InlineData(150_000)]
-    [InlineData(350_000)]
-    [InlineData(500_000)]
-    public void DebrisCloud_GpuProfile(int count)
+    [InlineData(150_000, 0)]
+    [InlineData(350_000, 0)]
+    [InlineData(500_000, 0)]
+    [InlineData(1_000_000, 0)]
+    [InlineData(350_000, 1)]
+    [InlineData(350_000, 4)]
+    [InlineData(350_000, 16)]
+    [InlineData(350_000, 32)]
+    public void DebrisCloud_GpuProfile(int count, int leafCapacity)
     {
         using var sim = new PlanetSimulation(new SimulationParameters { MaxLiveParticles = 2_000_000 });
         Skip.IfNot(sim.TryEnableGpuGravity(), sim.GravityBackend);
+        if (leafCapacity > 0) sim.GpuLeafCapacity = leafCapacity;
         sim.Load(DebrisCloud(count));
         for (int i = 0; i < 2; i++) sim.Step();
         const int steps = 10;
         var sum = new double[16];
+        long nodes = 0;
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < steps; i++)
         {
             sim.Step();
             var t = sim.LastPhaseTimes;
-            double[] v = { t.KickDrift, t.TreeBuild, t.GpuTreeFlatten, t.GpuFlatten - t.GpuTreeFlatten, t.GpuUpload, t.GpuKernel, t.GpuReadback,
+            double[] v = { t.KickDrift, t.TreeBuild, t.GpuFlatten, t.GpuTreeBuild, t.GpuUpload, t.GpuKernel, t.GpuReadback,
                            t.GpuScatter, t.Reorder, t.Gravity - t.GpuFlatten - t.GpuWalk - t.GpuScatter - t.Reorder,
                            t.CollisionDetect, t.CollisionResolve, t.CollisionCompact, t.Collisions - t.CollisionDetect - t.CollisionResolve - t.CollisionCompact,
                            t.Rest, t.Total };
             for (int k = 0; k < v.Length; k++) sum[k] += v[k];
         }
+        nodes = sim.LastGpuNodeCount;
         sw.Stop();
         Assert.True(sim.GpuGravityActive, sim.GravityBackend);
-        string[] names = { "kick+drift", "tree build", "flatten", "pack", "upload", "GPU walk", "readback", "scatter", "reorder", "gravity other",
+        string[] names = { "kick+drift", "CPU tree build", "CPU prep", "GPU tree build", "upload", "GPU walk", "readback", "scatter", "reorder", "gravity other",
                            "coll broad", "coll resolve", "coll compact", "coll other", "rest", "total" };
-        output.WriteLine($"profile GPU {count}: live {sim.Particles.Count}, wall {sw.Elapsed.TotalMilliseconds / steps:F1} ms/step; " +
+        output.WriteLine($"profile GPU {count} leaf {sim.GpuLeafCapacity}: live {sim.Particles.Count}, nodes {nodes}, wall {sw.Elapsed.TotalMilliseconds / steps:F1} ms/step; " +
                          string.Join(", ", names.Select((nm, k) => $"{nm} {sum[k] / steps:F1}")));
     }
 

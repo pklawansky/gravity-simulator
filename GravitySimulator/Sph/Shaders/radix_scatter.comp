@@ -1,0 +1,43 @@
+// LSD radix sort pass, step 2: stable scatter. Each element's rank among the earlier elements of its tile
+// with the same digit comes from a work-group scan of one-hot digit counts packed 2 per uint (16 bits each,
+// enough for 256), added to the tile's scanned offset for that digit.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer HiIn { uint hiIn[]; };
+layout(std430, binding = 1) readonly buffer LoIn { uint loIn[]; };
+layout(std430, binding = 2) readonly buffer ValIn { uint valIn[]; };
+layout(std430, binding = 3) writeonly buffer HiOut { uint hiOut[]; };
+layout(std430, binding = 4) writeonly buffer LoOut { uint loOut[]; };
+layout(std430, binding = 5) writeonly buffer ValOut { uint valOut[]; };
+layout(std430, binding = 6) readonly buffer HistScan { uint histScan[]; };
+uniform uint uShift;
+uniform uint uWord;                       // 0: digit from keyLo, 1: from keyHi
+uniform uint uTiles;
+shared uint sc[8 * 256];
+void main()
+{
+    uint t = gl_LocalInvocationID.x, i = gl_GlobalInvocationID.x;
+    bool live = i < uCount;
+    uint hi = 0u, lo = 0u, v = 0u, d = 0u;
+    if (live)
+    {
+        hi = hiIn[i]; lo = loIn[i]; v = valIn[i];
+        d = ((uWord == 0u ? lo : hi) >> uShift) & 15u;
+    }
+    uint word = d >> 1, one = live ? (1u << (16u * (d & 1u))) : 0u;
+    for (uint w = 0u; w < 8u; w++) sc[w * 256u + t] = w == word ? one : 0u;
+    barrier();
+    for (uint off = 1u; off < 256u; off <<= 1u)
+    {
+        uint add[8];
+        for (uint w = 0u; w < 8u; w++) add[w] = t >= off ? sc[w * 256u + t - off] : 0u;
+        barrier();
+        for (uint w = 0u; w < 8u; w++) sc[w * 256u + t] += add[w];
+        barrier();
+    }
+    if (!live) return;
+    uint incl = (sc[word * 256u + t] >> (16u * (d & 1u))) & 0xFFFFu;
+    uint dst = histScan[d * uTiles + gl_WorkGroupID.x] + incl - 1u;
+    hiOut[dst] = hi;
+    loOut[dst] = lo;
+    valOut[dst] = v;
+}

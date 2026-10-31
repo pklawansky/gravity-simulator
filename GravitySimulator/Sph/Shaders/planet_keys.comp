@@ -1,0 +1,31 @@
+// GPU octree build, step 1 (Karras 2012; Bedorf et al. 2012): a 60-bit Morton key per body, found by
+// descending the cube 20 levels with the CPU tree's own octant test (p >= centre per axis) and its own
+// float centre update (c +/- h, h halved per level), so every key names exactly the cube the CPU tree
+// would put the body in. Octant digit = x | y << 1 | z << 2; levels 1-10 in keyHi, 11-20 in keyLo.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Body { vec4 body[]; };   // xyz, mass
+layout(std430, binding = 1) writeonly buffer KeyHi { uint keyHi[]; };
+layout(std430, binding = 2) writeonly buffer KeyLo { uint keyLo[]; };
+layout(std430, binding = 3) writeonly buffer Val { uint val[]; };
+uniform vec4 uRoot;                       // root cube centre, half size
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    vec3 p = body[i].xyz;
+    precise vec3 c = uRoot.xyz;
+    precise float h = uRoot.w;
+    uint hi = 0u, lo = 0u;
+    for (int l = 1; l <= 20; l++)
+    {
+        uint oct = (p.x >= c.x ? 1u : 0u) | (p.y >= c.y ? 2u : 0u) | (p.z >= c.z ? 4u : 0u);
+        h = h * 0.5;
+        c.x = c.x + ((oct & 1u) != 0u ? h : -h);
+        c.y = c.y + ((oct & 2u) != 0u ? h : -h);
+        c.z = c.z + ((oct & 4u) != 0u ? h : -h);
+        if (l <= 10) hi = (hi << 3) | oct; else lo = (lo << 3) | oct;
+    }
+    keyHi[i] = hi;
+    keyLo[i] = lo;
+    val[i] = i;
+}
