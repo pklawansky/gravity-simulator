@@ -296,6 +296,10 @@ namespace GravitySimulator.Sph
         {
             if (!_glReady) return;
             _gl.MakeCurrent();
+            var st = _sim.Stats;
+            var units = _sim.Scenario?.Units;
+            _renderer.Overlay = units == null ? null :
+                ("Simulated time: " + SimTimeFormat.Format(st.SimTime, units), $"Steps: {st.Steps:N0}" + Swallowed(st));
             _renderer.Render(_sim, _camera, _gl.ClientSize.Width, _gl.ClientSize.Height);
             if (_screenshotRequested)
             {
@@ -313,6 +317,11 @@ namespace GravitySimulator.Sph
                 _fpsClock.Restart();
             }
         }
+
+        // TDE: what the hole has swallowed, on the overlay so screenshots show when it starts.
+        private string Swallowed(SphStats s) => _sim.Scenario?.Kind == SphPresetKind.TidalDisruption
+            ? $"    swallowed by the hole: {s.Accreted:N0} particles ({s.BlackHoleAccreted / SphPresets.StarMass:P1} of the star)"
+            : "";
 
         private void SaveScreenshot()
         {
@@ -358,12 +367,7 @@ namespace GravitySimulator.Sph
             sb.AppendLine($"FPS       {_fps,10:F1}");
             sb.AppendLine($"Δt        {s.Dt,10:G3}");
             sb.AppendLine($"Steps     {s.Steps,10:N0}");
-            if (sc != null && sc.Kind == SphPresetKind.TidalDisruption)
-                sb.AppendLine($"Time      {s.SimYears * 3.15576e7 / 60,7:F2} min");
-            else if (sc != null && sc.Units == UnitSystem.SolarAu)
-                sb.AppendLine($"Time      {s.SimYears * 365.25,7:F2} days");
-            else
-                sb.AppendLine($"Time      {s.SimYears / 1e6,7:F3} Myr");
+            if (sc != null) sb.AppendLine($"Time      {SimTimeFormat.Format(s.SimTime, sc.Units),10}");
             sb.AppendLine($"E total   {s.TotalEnergy,10:G4}");
             sb.AppendLine($" kinetic  {s.Kinetic,10:G4}");
             sb.AppendLine($" thermal  {s.Thermal,10:G4}");

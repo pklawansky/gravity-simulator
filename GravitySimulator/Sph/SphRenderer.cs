@@ -27,6 +27,30 @@ namespace GravitySimulator.Sph
         /// <summary>Multiplies the automatic exposure.</summary>
         public float Brightness { get; set; } = 1f;
 
+        /// <summary>Overlay drawn in the top-left corner of the view (large first line, smaller second); null = none.</summary>
+        public (string Title, string Detail)? Overlay { get; set; }
+
+        private GlProgram _text;
+        private int _textTex, _textW, _textH;
+        private (string, string)? _textDrawn;
+
+        private const string TextVertexSource = @"#version 430 core
+// Screen-space quad (triangle strip) over uRect = (x0, y0, x1, y1) in NDC; texture row 0 at the top.
+uniform vec4 uRect;
+out vec2 vUv;
+void main()
+{
+    vec2 c = vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1);
+    vUv = vec2(c.x, 1.0 - c.y);
+    gl_Position = vec4(mix(uRect.xy, uRect.zw, c), 0.0, 1.0);
+}";
+
+        private const string TextFragmentSource = @"#version 430 core
+in vec2 vUv;
+uniform sampler2D uTex;
+out vec4 fragColor;
+void main() { fragColor = texture(uTex, vUv); }";
+
         public void Initialize()
         {
             _splat = GlProgram.Graphics("splat.vert", "splat.frag");
@@ -43,6 +67,8 @@ namespace GravitySimulator.Sph
             GL.BindVertexArray(0);
             _fbo = GL.GenFramebuffer();
             _hdrTex = GL.GenTexture();
+            _text = GlProgram.FromSource("overlay text", TextVertexSource, TextFragmentSource);
+            _textTex = GL.GenTexture();
         }
 
         private static int MakeAttribute(int location, int components)
@@ -140,7 +166,72 @@ namespace GravitySimulator.Sph
 
             // 3. Sinks, stars, black holes and supernova flashes (Planet formation's shader and rules).
             DrawSinks(sim, view, proj, pointScale);
+            DrawOverlay(width, height);
             GL.BindVertexArray(0);
+        }
+
+        // The overlay text is rasterised with GDI+ into a texture (only when it changes) and drawn as an
+        // alpha-blended quad, so it is part of the GL frame and of saved screenshots.
+        private void DrawOverlay(int width, int height)
+        {
+            if (Overlay is not { } o) return;
+            if (_textDrawn != o) UploadOverlay(o.Title, o.Detail);
+            const int margin = 12;
+            float x0 = -1f + 2f * margin / width, x1 = -1f + 2f * (margin + _textW) / width;
+            float y1 = 1f - 2f * margin / height, y0 = 1f - 2f * (margin + _textH) / height;
+            GL.Enable(EnableCap.Blend);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            GL.UseProgram(_text.Handle);
+            _text.Set("uTex", 0);
+            int l = _text.Location("uRect");
+            if (l >= 0) GL.ProgramUniform4(_text.Handle, l, x0, y0, x1, y1);
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _textTex);
+            GL.BindVertexArray(_emptyVao);
+            GL.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
+            GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.One);
+        }
+
+        private void UploadOverlay(string title, string detail)
+        {
+            using var big = new Font("Segoe UI", 26f, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var small = new Font("Segoe UI", 17f, FontStyle.Regular, GraphicsUnit.Pixel);
+            Size s1, s2;
+            using (var probe = new Bitmap(1, 1))
+            using (var g = Graphics.FromImage(probe))
+            {
+                s1 = Size.Ceiling(g.MeasureString(title ?? "", big));
+                s2 = Size.Ceiling(g.MeasureString(detail ?? "", small));
+            }
+            const int pad = 10;
+            int w = Math.Max(s1.Width, s2.Width) + 2 * pad, h = s1.Height + s2.Height + 2 * pad;
+            using var bmp = new Bitmap(w, h, ImagingFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(150, 0, 0, 0));
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                g.DrawString(title ?? "", big, Brushes.White, pad, pad);
+                using var grey = new SolidBrush(Color.FromArgb(255, 200, 200, 210));
+                g.DrawString(detail ?? "", small, grey, pad + 2, pad + s1.Height);
+            }
+            var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, ImagingFormat.Format32bppArgb);
+            try
+            {
+                GL.BindTexture(TextureTarget.Texture2D, _textTex);
+                GL.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
+                GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, w, h, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, data.Scan0);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
+            }
+            _textW = w;
+            _textH = h;
+            _textDrawn = (title, detail);
         }
 
         private static void BindAttribute(int location, int buffer)
@@ -256,6 +347,8 @@ namespace GravitySimulator.Sph
             _splat?.Dispose();
             _tonemap?.Dispose();
             _points?.Dispose();
+            _text?.Dispose();
+            if (_textTex != 0) GL.DeleteTexture(_textTex);
             foreach (int b in new[] { _vboPos, _vboRad, _vboMass, _vboClass }) if (b != 0) GL.DeleteBuffer(b);
             foreach (int v in new[] { _gasVao, _emptyVao, _pointVao }) if (v != 0) GL.DeleteVertexArray(v);
             if (_fbo != 0) GL.DeleteFramebuffer(_fbo);
