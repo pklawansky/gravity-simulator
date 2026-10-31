@@ -226,6 +226,8 @@ namespace GravitySimulator.Planets
 
         /// <summary>Which gravity backend is active, for the readout (e.g. "GPU (NVIDIA ...)" or "CPU Barnes-Hut").</summary>
         public string GravityBackend => _gravityBackend;
+        /// <summary>Touching pairs the last step resolved (or tried: a pair an earlier one moved apart is skipped).</summary>
+        public int LastContactPairs => _collisions.LastContacts;
         /// <summary>Octree nodes of the last GPU gravity build (0 on the CPU path).</summary>
         public int LastGpuNodeCount => _gpu?.LastNodeCount ?? 0;
         /// <summary>GPU backend only: bodies per octree leaf at most (see <see cref="GpuGravity.LeafCapacity"/>).</summary>

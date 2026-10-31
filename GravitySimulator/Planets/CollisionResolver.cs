@@ -48,6 +48,8 @@ namespace GravitySimulator.Planets
         public int LastFragments { get; private set; }
         /// <summary>Fragments not created this step because the live count was at <see cref="MaxBodies"/> (their mass was folded).</summary>
         public int LastFoldedAtCeiling { get; private set; }
+        /// <summary>Touching pairs found this step (before resolution).</summary>
+        public int LastContacts { get; private set; }
         /// <summary>Distance tests the broad phase made this step (a measure of its work).</summary>
         public long LastPairTests { get; private set; }
         /// <summary>Wall time this step: finding the touching pairs, resolving them, compacting and appending fragments.</summary>
@@ -102,6 +104,42 @@ namespace GravitySimulator.Planets
         private uint[] _candidates;
         private int _candidateCount;
 
+        /// <summary>
+        /// Outcomes: classify the contacts (<see cref="CollisionOutcomes.Classify"/>, a pure function of the two
+        /// bodies) in parallel before the sequential sweep, and use a classification in the sweep only while neither
+        /// of its bodies has been changed by an earlier pair (otherwise it is classified again, as before). The
+        /// result is identical to classifying every pair in the sweep; on by default, off to check that.
+        /// </summary>
+        public bool SpeculativeClassify { get; set; } = true;
+        private const int SpeculateMinPairs = 2048;
+        private CollisionResult[] _pre = Array.Empty<CollisionResult>();
+        private bool[] _preValid = Array.Empty<bool>(), _dirty = Array.Empty<bool>();
+        private bool _usePre;
+        private int _preK;
+
+        // Classifies every Planet-Planet contact of _pairs[0..pairs) on the state before the sweep (in parallel),
+        // with exactly the arguments ResolveOutcome would pass.
+        private void Speculate(ParticleSystem ps, int pairs)
+        {
+            if (_pre.Length < pairs) { _pre = new CollisionResult[Math.Max(pairs, 2 * _pre.Length)]; _preValid = new bool[_pre.Length]; }
+            if (_dirty.Length < ps.Capacity) _dirty = new bool[ps.Capacity];
+            int chunks = Environment.ProcessorCount * 4, size = (pairs + chunks - 1) / chunks;
+            Parallel.For(0, chunks, c =>
+            {
+                for (int k = c * size, e = Math.Min(pairs, (c + 1) * size); k < e; k++)
+                {
+                    long key = _pairs[k];
+                    int i = (int)(key >> 32), j = (int)(key & 0xFFFFFFFF);
+                    _preValid[k] = false;
+                    if (ps.Mass[i] <= 0f || ps.Mass[j] <= 0f || ps.Class[i] != BodyClass.Planet || ps.Class[j] != BodyClass.Planet) continue;
+                    int t = ps.Mass[i] >= ps.Mass[j] ? i : j, p = t == i ? j : i;
+                    _pre[k] = CollisionOutcomes.Classify(ps.Mass[t], ps.Mass[p], ps.Radius[t], ps.Radius[p],
+                        ps.Position[p] - ps.Position[t], ps.Velocity[p] - ps.Velocity[t]);
+                    _preValid[k] = true;
+                }
+            });
+        }
+
         private void ResolveCore(ParticleSystem ps)
         {
             LastMerges = 0;
@@ -109,6 +147,7 @@ namespace GravitySimulator.Planets
             LastBlackHoleMergers = 0;
             LastPartialAccretions = LastHitAndRuns = LastErosions = LastDisruptions = LastFragments = LastFoldedAtCeiling = 0;
             LastPairTests = 0;
+            LastContacts = 0;
             LastDetectMs = LastResolveMs = LastCompactMs = 0;
             _fragCount = _removed = 0;
             int n = ps.Count;
@@ -118,18 +157,31 @@ namespace GravitySimulator.Planets
 
             long t0 = Stopwatch.GetTimestamp();
             int pairs = _candidates != null ? FromCandidates(ps, _candidates, _candidateCount) : Detect(ps);
+            LastContacts = pairs;
             long t1 = Stopwatch.GetTimestamp();
 
             // Sequential, in (lower index, higher index) order: resolution mutates bodies and draws random numbers.
             // TryResolve re-tests each pair against the current state, so a pair that an earlier one moved apart
             // is skipped; contacts that only arise during the sweep wait for the next step.
+            bool speculate = SpeculativeClassify && Model == CollisionModel.Outcomes && pairs >= SpeculateMinPairs;
+            if (speculate) Speculate(ps, pairs);
             for (int k = 0; k < pairs; k++)
             {
                 long key = _pairs[k];
                 int i = (int)(key >> 32), j = (int)(key & 0xFFFFFFFF);
                 if (ps.Mass[i] <= 0f || ps.Mass[j] <= 0f) continue;
-                TryResolve(ps, i, j);
+                if (speculate)
+                {
+                    // The classification made before the sweep is exact while neither body has been touched since.
+                    _usePre = _preValid[k] && !_dirty[i] && !_dirty[j];
+                    _preK = k;
+                    TryResolve(ps, i, j);
+                    _dirty[i] = _dirty[j] = true;
+                }
+                else TryResolve(ps, i, j);
             }
+            _usePre = false;
+            if (speculate) Array.Clear(_dirty, 0, n);
             long t2 = Stopwatch.GetTimestamp();
 
             if (LastMerges > 0 || _removed > 0) ps.Compact();
@@ -175,6 +227,7 @@ namespace GravitySimulator.Planets
         // Exact re-test of external candidates (live bodies, Touching), then the same sort and de-duplication as Detect.
         private int FromCandidates(ParticleSystem ps, uint[] cand, int count)
         {
+            if (count >= ParallelCandidates) return FromCandidatesParallel(ps, cand, count);
             int n = ps.Count;
             if (_pairs.Length < count) _pairs = new long[Math.Max(count, 2 * _pairs.Length)];
             Vector3[] pos = ps.Position;
@@ -190,6 +243,66 @@ namespace GravitySimulator.Planets
             }
             LastPairTests = count;
             Array.Sort(_pairs, 0, total);
+            int unique = 0;
+            for (int k = 0; k < total; k++)
+                if (unique == 0 || _pairs[k] != _pairs[unique - 1]) _pairs[unique++] = _pairs[k];
+            return unique;
+        }
+
+        private const int ParallelCandidates = 32_768;
+        private long[][] _bucketKeys = Array.Empty<long[]>();
+        private int[] _bucketFill = Array.Empty<int>();
+
+        // As FromCandidates, in parallel: candidates filtered by chunk into buckets by lower index (a pair and its
+        // repeats share a bucket), each bucket sorted on its own, buckets concatenated in order, then de-duplicated.
+        // Same pairs, same order.
+        private int FromCandidatesParallel(ParticleSystem ps, uint[] cand, int count)
+        {
+            int n = ps.Count;
+            Vector3[] pos = ps.Position;
+            float[] rad = ps.Radius, mass = ps.Mass;
+            int buckets = Environment.ProcessorCount * 2, chunks = buckets;
+            int per = (count + chunks - 1) / chunks;
+            int slots = chunks * buckets;
+            if (_bucketKeys.Length < slots) { _bucketKeys = new long[slots][]; _bucketFill = new int[slots]; }
+            Parallel.For(0, chunks, c =>
+            {
+                for (int b = 0; b < buckets; b++) _bucketFill[c * buckets + b] = 0;
+                for (int k = c * per, e = Math.Min(count, (c + 1) * per); k < e; k++)
+                {
+                    uint a = cand[2 * k], bb = cand[2 * k + 1];
+                    if (a >= (uint)n || bb >= (uint)n || a == bb) continue;
+                    int i = (int)Math.Min(a, bb), j = (int)Math.Max(a, bb);
+                    if (mass[i] <= 0f || mass[j] <= 0f || !Touching(pos[i], rad[i], pos[j], rad[j])) continue;
+                    int slot = c * buckets + (int)((long)i * buckets / n);
+                    long[] buf = _bucketKeys[slot] ??= new long[256];
+                    int f = _bucketFill[slot];
+                    if (f == buf.Length) { Array.Resize(ref buf, 2 * f); _bucketKeys[slot] = buf; }
+                    buf[f] = ((long)i << 32) | (uint)j;
+                    _bucketFill[slot] = f + 1;
+                }
+            });
+            var start = new int[buckets + 1];
+            for (int b = 0; b < buckets; b++)
+            {
+                int sum = 0;
+                for (int c = 0; c < chunks; c++) sum += _bucketFill[c * buckets + b];
+                start[b + 1] = start[b] + sum;
+            }
+            int total = start[buckets];
+            if (_pairs.Length < total) _pairs = new long[Math.Max(total, 2 * _pairs.Length)];
+            Parallel.For(0, buckets, b =>
+            {
+                int at = start[b];
+                for (int c = 0; c < chunks; c++)
+                {
+                    int slot = c * buckets + b, f = _bucketFill[slot];
+                    if (f > 0) Array.Copy(_bucketKeys[slot], 0, _pairs, at, f);
+                    at += f;
+                }
+                Array.Sort(_pairs, start[b], start[b + 1] - start[b]);
+            });
+            LastPairTests = count;
             int unique = 0;
             for (int k = 0; k < total; k++)
                 if (unique == 0 || _pairs[k] != _pairs[unique - 1]) _pairs[unique++] = _pairs[k];
@@ -455,7 +568,7 @@ namespace GravitySimulator.Planets
             float mt = ps.Mass[t], mp = ps.Mass[p], rt = ps.Radius[t], rp = ps.Radius[p], mtot = mt + mp;
             Vector3 d = ps.Position[p] - ps.Position[t];
             Vector3 vRel = ps.Velocity[p] - ps.Velocity[t];
-            var r = CollisionOutcomes.Classify(mt, mp, rt, rp, d, vRel);
+            var r = _usePre ? _pre[_preK] : CollisionOutcomes.Classify(mt, mp, rt, rp, d, vRel);
             float m0 = MinFragmentMass > 0f ? MinFragmentMass : mp;
 
             if (r.Outcome == CollisionOutcome.HitAndRun)
