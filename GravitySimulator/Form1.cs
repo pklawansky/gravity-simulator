@@ -159,12 +159,16 @@ namespace GravitySimulator
                 return;
             }
 
+            var version = choice == "simulate-gl-failure" ? new Version(9, 9) : new Version(3, 3);
             try
             {
+                // Probe first: a GLControl's own context failure would surface as WinForms' unhandled-exception dialog.
+                using (var probe = Sph.HeadlessGlContext.TryCreate(version, out string why))
+                    if (probe == null) throw new InvalidOperationException(why);
                 _gl = new GLControl(new GLControlSettings
                 {
                     API = ContextAPI.OpenGL,
-                    APIVersion = choice == "simulate-gl-failure" ? new Version(9, 9) : new Version(3, 3),
+                    APIVersion = version,
                     Profile = ContextProfile.Core,
                     Flags = ContextFlags.ForwardCompatible,
                 })
