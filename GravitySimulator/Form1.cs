@@ -1,9 +1,13 @@
-﻿using GravitySimulator.Engines;
+﻿using GravitySimulator.Classic;
+using GravitySimulator.Engines;
 using GravitySimulator.Models;
+using OpenTK.GLControl;
+using OpenTK.Windowing.Common;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
@@ -19,7 +23,22 @@ namespace GravitySimulator
             InitializeComponent();
             Load += Form1_Load;
             KeyDown += Form1_KeyDown;
+            FormClosing += Form1_FormClosing;
         }
+
+        // OpenGL renderer (the GDI one below is the fallback). GRAVITYSIM_CLASSIC_RENDERER=gdi forces GDI;
+        // =simulate-gl-failure asks for an impossible OpenGL version, to exercise the fallback.
+        private const string RendererEnvVar = "GRAVITYSIM_CLASSIC_RENDERER";
+        private GLControl _gl;
+        private ClassicGlRenderer _glRenderer;
+        private bool _glReady;
+        private readonly ClassicFrame _glFrame = new ClassicFrame();
+        private Label lblRenderer;
+        private readonly ToolTip _rendererTip = new ToolTip();
+        private string _rendererName = "GDI";
+        private int _frames;
+        private double _drawMs, _tickMs;
+        private readonly Stopwatch _statsClock = Stopwatch.StartNew();
 
         Timer t = null;
 
@@ -74,6 +93,10 @@ namespace GravitySimulator
 
             lblFocus.Text = focus.ToString();
 
+            lblRenderer = new Label { AutoSize = true, Location = new Point(label4.Left, lblFocus.Bottom + 13), ForeColor = Color.DimGray };
+            Controls.Add(lblRenderer);
+            StartRenderer();
+
             SetupPoints();
 
             t.Start();
@@ -112,6 +135,157 @@ namespace GravitySimulator
 
 
 
+        // The GL control takes keyboard focus, and arrow keys never reach KeyDown as dialog keys: handle them here.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Up || keyData == Keys.Down || keyData == Keys.Left || keyData == Keys.Right)
+            {
+                Form1_KeyDown(this, new KeyEventArgs(keyData));
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        /// <summary>
+        /// Switches drawing to OpenGL when a 3.3 core context can be created; otherwise keeps the GDI
+        /// renderer and says why in the renderer label. A shader error is an internal error: reported, then GDI.
+        /// </summary>
+        private void StartRenderer()
+        {
+            string choice = (Environment.GetEnvironmentVariable(RendererEnvVar) ?? "").Trim().ToLowerInvariant();
+            if (choice == "gdi")
+            {
+                SetRendererLabel("GDI", "GDI renderer forced by " + RendererEnvVar + "=gdi.");
+                return;
+            }
+
+            try
+            {
+                _gl = new GLControl(new GLControlSettings
+                {
+                    API = ContextAPI.OpenGL,
+                    APIVersion = choice == "simulate-gl-failure" ? new Version(9, 9) : new Version(3, 3),
+                    Profile = ContextProfile.Core,
+                    Flags = ContextFlags.ForwardCompatible,
+                })
+                {
+                    Bounds = pictureBox1.Bounds,
+                    Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                };
+                Controls.Add(_gl);
+                _gl.CreateControl(); // creates the context now, so a failure lands here
+                _gl.MakeCurrent();
+            }
+            catch (Exception ex)
+            {
+                DropGlControl();
+                SetRendererLabel("GDI (OpenGL unavailable)", "OpenGL 3.3 could not be initialised, so the GDI renderer is used.\n\nDetails: " + ex.Message);
+                return;
+            }
+
+            try
+            {
+                _glRenderer = new ClassicGlRenderer();
+                _glRenderer.Initialize();
+                _glRenderer.SetWalls(BoundaryPlanes);
+            }
+            catch (Exception ex)
+            {
+                // The context is fine: a failure here is a bug in our shaders, not the machine.
+                MessageBox.Show(this,
+                    "The classic simulator's OpenGL renderer could not start because of an internal shader error (OpenGL 3.3 itself is available). " +
+                    "It uses the GDI renderer instead.\n\nDetails: " + ex.Message,
+                    "Internal shader error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                try { _glRenderer?.Dispose(); } catch { }
+                _glRenderer = null;
+                DropGlControl();
+                SetRendererLabel("GDI (internal shader error)", ex.Message);
+                return;
+            }
+
+            _glFrame.Bounds = new System.Numerics.Vector3(sceneBounds.x, sceneBounds.y, sceneBounds.z);
+            _glFrame.LightMarkerRadius = 5f / sceneScale;
+            foreach (var l in pointLights)
+                _glFrame.Lights.Add(new ClassicLight { Position = new System.Numerics.Vector3(l.Center.x, l.Center.y, l.Center.z), Intensity = (float)l.LightIntensity, Ambience = (float)l.Ambience });
+
+            _gl.Paint += (s, e) => RenderGl();
+            _gl.Resize += (s, e) => _gl.Invalidate();
+            pictureBox1.Visible = false;
+            foreach (var label in new Control[] { label1, lblActivePoints, label3, lblGravity, label4, lblFocus, lblRenderer })
+                label.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _glReady = true;
+            SetRendererLabel("OpenGL", "OpenGL renderer: " + _glRenderer.GlVersion);
+        }
+
+        private void DropGlControl()
+        {
+            if (_gl == null) return;
+            try { Controls.Remove(_gl); _gl.Dispose(); } catch { }
+            _gl = null;
+        }
+
+        private void SetRendererLabel(string name, string details)
+        {
+            _rendererName = name;
+            lblRenderer.Text = "Renderer: " + name;
+            _rendererTip.SetToolTip(lblRenderer, details);
+        }
+
+        // Frame rate and costs, refreshed twice a second: frames drawn per second, the CPU time of
+        // drawing one, and of the last timer tick (physics plus, for GDI, drawing).
+        private void CountFrame(double drawMs)
+        {
+            _frames++;
+            _drawMs += drawMs;
+            double secs = _statsClock.Elapsed.TotalSeconds;
+            if (secs < 0.5) return;
+            lblRenderer.Text = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "Renderer: {0}\n{1:0} fps, draw {2:0.0} ms\ntick {3:0.0} ms", _rendererName, _frames / secs, _drawMs / _frames, _tickMs);
+            _frames = 0;
+            _drawMs = 0;
+            _statsClock.Restart();
+        }
+
+        // Snapshot of the scene for the next GL paint, taken on the tick (as the GDI renderer drew on
+        // the tick). A collision flash is shown once and cleared, as before.
+        private void CaptureGlFrame()
+        {
+            _glFrame.Focus = focus;
+            _glFrame.Spheres.Clear();
+            foreach (var point in GravityEngine.Instance.Points.Where(x => x.IsAlive))
+            {
+                _glFrame.Spheres.Add(new ClassicSphere
+                {
+                    Position = new System.Numerics.Vector3(point.Position.x, point.Position.y, point.Position.z),
+                    Radius = point.Radius,
+                    Flash = point.PointCollision,
+                });
+                point.PointCollision = false;
+            }
+        }
+
+        private void RenderGl()
+        {
+            if (!_glReady) return;
+            var sw = Stopwatch.StartNew();
+            _gl.MakeCurrent();
+            _glRenderer.Render(_glFrame, _gl.ClientSize.Width, _gl.ClientSize.Height);
+            double ms = sw.Elapsed.TotalMilliseconds;
+            _gl.SwapBuffers();
+            CountFrame(ms);
+        }
+
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            t?.Stop();
+            if (_glReady)
+            {
+                _glReady = false;
+                _gl.MakeCurrent();
+                _glRenderer.Dispose();
+            }
+        }
+
         public int ActivePoints => GravityEngine.Instance.Points.Count(x => x.IsAlive);
 
         private void SetupPoints()
@@ -132,8 +306,29 @@ namespace GravitySimulator
         //float focusInc = 0.01f;
         private void T_Tick(object sender, EventArgs e)
         {
-
+            var tick = Stopwatch.StartNew();
             ProcessPositions();
+            if (_glReady)
+            {
+                CaptureGlFrame();
+                _gl.Invalidate();
+            }
+            else
+            {
+                var draw = Stopwatch.StartNew();
+                RenderGdi();
+                CountFrame(draw.Elapsed.TotalMilliseconds);
+            }
+
+            lblActivePoints.BeginInvoke((Action)(() =>
+            {
+                lblActivePoints.Text = ActivePoints.ToString();
+            }));
+            _tickMs = tick.Elapsed.TotalMilliseconds;
+        }
+
+        private void RenderGdi()
+        {
             var bmp = GraphicsEngine.GetBitmap(Brushes.Black, width, height);
 
             if (mode == "orthographic")
@@ -161,11 +356,6 @@ namespace GravitySimulator
             pictureBox1.BeginInvoke((Action)(() =>
             {
                 pictureBox1.Image = bmp;
-            }));
-
-            lblActivePoints.BeginInvoke((Action)(() =>
-            {
-                lblActivePoints.Text = ActivePoints.ToString();
             }));
         }
 
