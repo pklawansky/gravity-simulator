@@ -4,8 +4,8 @@ using GravitySimulator.Sph;
 namespace GravitySimulator.Tests;
 
 /// <summary>
-/// Every GL program of both 3D modes compiles and links (skipped without an OpenGL 4.3 context): the
-/// renderers of Planet formation and of the SPH mode, the shared compact-body sphere shader, the
+/// Every GL program compiles and links (skipped without an OpenGL 4.3 context): the renderers of
+/// Planet formation, the SPH mode and the classic simulator, the shared compact-body sphere shader, the
 /// SPH compute shaders and Planet formation's GPU gravity.
 /// </summary>
 [Trait("Category", "GPU")]
@@ -40,6 +40,14 @@ public class ShaderCompileTests
     {
         using var gl = Context();
         using var r = new CompactBodyRenderer();
+        r.Initialize();
+    }
+
+    [SkippableFact]
+    public void ClassicGlRenderer_AllProgramsBuild()
+    {
+        using var gl = Context();
+        using var r = new GravitySimulator.Classic.ClassicGlRenderer();
         r.Initialize();
     }
 
