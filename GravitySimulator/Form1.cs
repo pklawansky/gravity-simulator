@@ -37,7 +37,8 @@ namespace GravitySimulator
         private readonly ToolTip _rendererTip = new ToolTip();
         private string _rendererName = "GDI";
         private int _frames;
-        private double _drawMs, _tickMs;
+        private double _drawMs, _tickMs, _simSeconds;
+        private readonly Stopwatch _tickClock = new Stopwatch();
         private readonly Stopwatch _statsClock = Stopwatch.StartNew();
 
         Timer t = null;
@@ -236,7 +237,8 @@ namespace GravitySimulator
         }
 
         // Frame rate and costs, refreshed twice a second: frames drawn per second, the CPU time of
-        // drawing one, and of the last timer tick (physics plus, for GDI, drawing).
+        // drawing one, and of the last timer tick (physics plus, for GDI, drawing), and the pace:
+        // simulated seconds per real second.
         private void CountFrame(double drawMs)
         {
             _frames++;
@@ -244,9 +246,10 @@ namespace GravitySimulator
             double secs = _statsClock.Elapsed.TotalSeconds;
             if (secs < 0.5) return;
             lblRenderer.Text = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "Renderer: {0}\n{1:0} fps, draw {2:0.0} ms\ntick {3:0.0} ms", _rendererName, _frames / secs, _drawMs / _frames, _tickMs);
+                "Renderer: {0}\n{1:0} fps, draw {2:0.0} ms\ntick {3:0.0} ms\npace {4:0.00} sim s/s", _rendererName, _frames / secs, _drawMs / _frames, _tickMs, _simSeconds / secs);
             _frames = 0;
             _drawMs = 0;
+            _simSeconds = 0;
             _statsClock.Restart();
         }
 
@@ -299,7 +302,17 @@ namespace GravitySimulator
 
         private void ProcessPositions()
         {
-            GravityEngine.Instance.ProcessPositions(stepsPerFrame, timeSkip, globalGravity, wallElasticity, funLevel, true);
+            // GDI keeps its fixed timeSkip per tick: its own drawing time sets the pace, as before. OpenGL
+            // ticks far more often, so it steps by the real time since the last tick at ClassicPace's rate,
+            // capped at the GDI step.
+            float step = timeSkip;
+            if (_glReady)
+            {
+                step = ClassicPace.Step(_tickClock.Elapsed.TotalSeconds, stepsPerFrame * timeSkip) / stepsPerFrame;
+                _tickClock.Restart();
+            }
+            GravityEngine.Instance.ProcessPositions(stepsPerFrame, step, globalGravity, wallElasticity, funLevel, true);
+            _simSeconds += stepsPerFrame * step;
         }
 
 
