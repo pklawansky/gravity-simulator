@@ -69,3 +69,31 @@ GPU tests skip without an OpenGL 4.3 context, like the others.
 ## Out of scope
 
 More particles, an orbit camera, physics changes, the unused orthographic mode (GDI only).
+
+## Amendment 2026-11-01: sphere brightness checked, original pace restored
+
+**Sphere brightness: no shading bug found; the shader is unchanged.** The report was that GL spheres
+looked darker and flatter than GDI's. The GL shader evaluates the same `Facet.UpdateBrush` formula
+(same lights, intensity / d^2, ambience 2, per-light clamp, sum and clamp, outward normals). Measured
+against the old facet code drawn into a Bitmap (same spheres, same lights):
+
+- 20-sphere scene: green mean over sphere pixels GDI 66.1, GL 66.3; pixels with green >= 128 GDI 1360, GL 1471.
+- 6 single spheres (next to the floor light to the far corners): means within -8 to +15 levels, maxima within 18.
+- Walls: per-channel frame means within 0.1, maxima within 3.
+- In the running app (9 PrintWindow shots each, random scenes): sphere-pixel green mean GL 47 to 73, GDI 50 to 59.
+
+The two screenshots that prompted this were different random scenes: the GDI one happened to have
+several spheres next to the floor light. What remains is the look: GDI paints each facet (about 22
+degrees across) one flat colour taken at its centre, so a lit facet is a visible block, where the
+impostor shades smoothly. Tests: `ClassicGlRendererTests.SphereBrightness_MatchesGdiFacets`,
+`SceneSphereBrightness_MatchesGdiFacets`, `WallBrightness_MatchesGdiFacets` (they fail if the spheres are
+darkened by 25%, their normals flipped, or the ambience cut).
+
+**Pace.** GDI ticked about 5.5 times a second at a fixed 0.4 s step: measured 2.27 and 2.16 simulated
+seconds per real second (two 16 s runs). OpenGL ticked 32 times a second at 0.4 s: 12.7 s/s, about 6x
+faster. Now each OpenGL tick steps the real time since the previous tick times
+`ClassicPace.SimSecondsPerRealSecond` (2.2), capped at the old 0.4 s step so a stalled frame slows the
+simulation instead of taking one huge step: measured 2.20 s/s, in steps of about 0.07 s (smaller, so
+more accurate). The GDI fallback keeps its fixed 0.4 s per tick, so its pace is still set by its drawing
+speed, as before. Physics code is unchanged. The stats label now also shows the pace (`pace N sim s/s`).
+This replaces "Behaviour change to know about" above.
