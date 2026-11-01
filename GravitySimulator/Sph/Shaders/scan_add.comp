@@ -1,0 +1,10 @@
+// Exclusive prefix sum, step 3: add the scanned block totals.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Data { uint data[]; };
+layout(std430, binding = 1) readonly buffer Sums { uint blockSums[]; };
+uniform uint uN;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i < uN) data[i] += blockSums[i / 2048u];
+}

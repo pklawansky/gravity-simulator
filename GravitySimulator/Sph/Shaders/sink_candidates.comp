@@ -1,0 +1,85 @@
+// Sink candidates: denser than rho_sink, converging (div v < 0), and bound within
+// r_e = min(r_sink, 2 h_max): E_th <= |E_grav|/2 and E_kin + E_th + E_grav < 0, E_grav = -3/5 M^2/r_e,
+// E_kin relative to the centre of mass without inward radial motion.
+// Mirrors SphReference.FindSinkCandidates.
+layout(local_size_x = 128) in;
+struct Candidate { vec4 posRho; vec4 index; };  // xyz, rho; x = index (int bits)
+layout(std430, binding = 0) readonly buffer PosH { vec4 posH[]; };
+layout(std430, binding = 1) readonly buffer Vel { vec4 vel[]; };
+layout(std430, binding = 2) readonly buffer MassId { vec4 massId[]; };
+layout(std430, binding = 3) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 4) readonly buffer RhoP { vec4 rhoP[]; };
+layout(std430, binding = 5) readonly buffer Extra { vec4 extra[]; };
+layout(std430, binding = 6) writeonly buffer Candidates { Candidate cands[]; };
+layout(std430, binding = 7) buffer Ctrl { uint ctrl[]; };
+uniform float uRhoSink, uSinkRadius;
+uniform uint uCandidateCapacity;
+uniform int uIdeal;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    if (massId[i].x <= 0.0) return;
+    float rho = rhoP[i].x;
+    if (!(rho > uRhoSink) || !(extra[i].x < 0.0)) return;
+    float cell = max(2.0 * uintBitsToFloat(ctrl[0]), 1e-30);
+    float re = min(uSinkRadius, cell), re2 = re * re;
+    vec3 xi = posH[i].xyz;
+    float m = 0.0, mv2 = 0.0, eth = 0.0;
+    vec3 mv = vec3(0.0);
+    ivec3 cc = cellOf(xi, cell);
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = cc + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            vec3 xj = posH[j].xyz;
+            if (cellOf(xj, cell) != c) continue;
+            vec3 d = xi - xj;
+            if (dot(d, d) >= re2) continue;
+            float mj = massId[j].x;
+            if (mj <= 0.0) continue;
+            vec4 v = vel[j];
+            float u = uIdeal == 1 ? v.w : 1.5 * rhoP[j].y / rhoP[j].x;
+            m += mj;
+            mv += mj * v.xyz;
+            eth += mj * u;
+        }
+    }
+    // Kinetic energy relative to the centre of mass, without the inward radial part (infall drives
+    // the collapse instead of resisting it): a second pass over the same particles.
+    vec3 vcom = mv / m;
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = cc + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            vec3 xj = posH[j].xyz;
+            if (cellOf(xj, cell) != c) continue;
+            vec3 d = xj - xi;
+            float d2 = dot(d, d);
+            if (d2 >= re2) continue;
+            float mj = massId[j].x;
+            if (mj <= 0.0) continue;
+            vec3 v = vel[j].xyz - vcom;
+            float r = sqrt(d2);
+            float vr = r > 0.0 ? dot(v, d) / r : 0.0;
+            mv2 += mj * (dot(v, v) - (vr < 0.0 ? vr * vr : 0.0));
+        }
+    }
+    float ekin = 0.5 * mv2;
+    float egrav = -0.6 * m * m / re;
+    if (!(eth <= -0.5 * egrav && ekin + eth + egrav < 0.0)) return;
+    uint slot = atomicAdd(ctrl[2], 1u);
+    if (slot >= uCandidateCapacity) return;
+    cands[slot].posRho = vec4(xi, rho);
+    cands[slot].index = vec4(intBitsToFloat(int(i)), 0.0, 0.0, 0.0);
+}

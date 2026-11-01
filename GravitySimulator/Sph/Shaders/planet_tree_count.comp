@@ -1,0 +1,18 @@
+// GPU octree build, step 4: the pre-order of the octree is the nodes sorted by (first body, level), since
+// the nodes starting at one body form a chain of consecutive levels and every node starting inside a node's
+// range is its descendant. Counts the nodes starting at each body and the shallowest level among them.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer NInfo { uvec4 nInfo[]; };
+layout(std430, binding = 1) buffer Cnt { uint cnt[]; };
+layout(std430, binding = 2) buffer LMin { uint lmin[]; };
+layout(std430, binding = 3) readonly buffer Ctrl { uint ctrl[]; };
+uniform uint uNodeCap;
+void main()
+{
+    uint nd = gl_GlobalInvocationID.x;
+    if (nd >= min(ctrl[0], uNodeCap)) return;
+    uvec4 info = nInfo[nd];
+    if (info.x > uCount) return; // never after a complete build; guards an overflowed one
+    atomicAdd(cnt[info.x], 1u);
+    atomicMin(lmin[info.x], info.z >> 4);
+}

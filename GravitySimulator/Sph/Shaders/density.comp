@@ -1,0 +1,68 @@
+// Density (gather with own h, minus the Dehnen & Aly self-contribution fraction), equation of state,
+// div v, |curl v| and the Balsara factor. Mirrors SphReference.ComputeDensity.
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer PosH { vec4 posH[]; };
+layout(std430, binding = 1) readonly buffer VPred { vec4 vpred[]; };
+layout(std430, binding = 2) readonly buffer MassId { vec4 massId[]; };
+layout(std430, binding = 3) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 4) writeonly buffer RhoP { vec4 rhoP[]; };     // rho, P, c_s, Balsara
+layout(std430, binding = 5) buffer Extra { vec4 extra[]; };             // div v, |curl v|, mu_max, phi
+layout(std430, binding = 6) readonly buffer Ctrl { uint ctrl[]; };
+uniform int uIdeal;
+uniform float uGamma, uCs2, uRhoCrit, uSelfCorrection;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    float mi = massId[i].x;
+    if (mi <= 0.0) return;
+    float cell = max(2.0 * uintBitsToFloat(ctrl[0]), 1e-30);
+    vec4 pi = posH[i];
+    vec3 xi = pi.xyz;
+    float hi = pi.w, support2 = 4.0 * hi * hi;
+    vec4 vpi = vpred[i];
+    float rho = 0.0, div = 0.0;
+    vec3 curl = vec3(0.0);
+    ivec3 ci = cellOf(xi, cell);
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        ivec3 c = ci + ivec3(dx, dy, dz);
+        uint b = hashCell(c);
+        uint e = cellStart[b + 1u];
+        for (uint j = cellStart[b]; j < e; j++)
+        {
+            vec3 xj = posH[j].xyz;
+            if (cellOf(xj, cell) != c) continue;     // another cell hashed to this bucket
+            vec3 xij = xi - xj;
+            float r2 = dot(xij, xij);
+            if (r2 >= support2) continue;
+            float r = sqrt(r2);
+            float mj = massId[j].x;
+            rho += mj * kernelW(r, hi);
+            vec3 g = gradW(xij, r, hi);
+            vec3 vij = vpi.xyz - vpred[j].xyz;
+            div -= mj * dot(vij, g);
+            curl -= mj * cross(vij, g);
+        }
+    }
+    rho -= uSelfCorrection * mi * kernelW(0.0, hi);
+    float P, cs;
+    if (uIdeal == 1)
+    {
+        P = (uGamma - 1.0) * rho * vpi.w;
+        cs = sqrt(max(uGamma * (uGamma - 1.0) * vpi.w, 0.0));
+    }
+    else
+    {
+        float x = pow(rho / uRhoCrit, 4.0 / 3.0);
+        P = uCs2 * rho * (1.0 + x);
+        cs = sqrt(uCs2 * (1.0 + 7.0 / 3.0 * x));
+    }
+    float divv = div / rho, curlv = length(curl) / rho;
+    float adiv = abs(divv);
+    float balsara = adiv / (adiv + curlv + 1e-4 * cs / hi + 1e-30);
+    rhoP[i] = vec4(rho, P, cs, balsara);
+    extra[i] = vec4(divv, curlv, 0.0, extra[i].w);
+}

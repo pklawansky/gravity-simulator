@@ -1,0 +1,17 @@
+// LSD radix sort pass, step 1: 4-bit digit histogram per 256-element tile, written digit-major
+// (hist[digit * tiles + tile]) so one exclusive scan gives every tile's output offset per digit.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer KeyIn { uint keyIn[]; };
+layout(std430, binding = 1) writeonly buffer Hist { uint hist[]; };
+uniform uint uShift;
+uniform uint uTiles;
+shared uint sh[16];
+void main()
+{
+    uint t = gl_LocalInvocationID.x, i = gl_GlobalInvocationID.x;
+    if (t < 16u) sh[t] = 0u;
+    barrier();
+    if (i < uCount) atomicAdd(sh[(keyIn[i] >> uShift) & 15u], 1u);
+    barrier();
+    if (t < 16u) hist[t * uTiles + gl_WorkGroupID.x] = sh[t];
+}

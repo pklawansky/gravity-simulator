@@ -40,4 +40,12 @@
   <ItemGroup>
     <Content Include="RefFiles\OneLoneCoder_olcEngine3D_Part4.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- GLSL for the Gas dynamics (SPH) mode, loaded as GravitySimulator.Sph.Shaders.<file>. -->
+    <EmbeddedResource Include="Sph\Shaders\*.glsl;Sph\Shaders\*.comp;Sph\Shaders\*.vert;Sph\Shaders\*.frag" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="OpenTK" Version="4.9.4" />
+    <PackageReference Include="OpenTK.GLControl" Version="4.0.2" />
+  </ItemGroup>
 </Project>

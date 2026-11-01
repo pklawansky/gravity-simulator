@@ -1,0 +1,15 @@
+// Collision broad phase, step 4: body indices into bucket order (cellStart = exclusive scan of the counts),
+// each packed with its level so the search filters a bucket without another read.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Key { uint key[]; };
+layout(std430, binding = 1) readonly buffer Rank { uint rank[]; };
+layout(std430, binding = 2) readonly buffer Start { uint cellStart[]; };
+layout(std430, binding = 3) writeonly buffer CellIdx { uint cellIdx[]; };   // body | level << 26
+layout(std430, binding = 4) readonly buffer Lvl { uint lvl[]; };
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uCount) return;
+    uint h = key[i];
+    if (h < uTableSize) cellIdx[cellStart[h] + rank[i]] = i | (lvl[i] << 26);
+}

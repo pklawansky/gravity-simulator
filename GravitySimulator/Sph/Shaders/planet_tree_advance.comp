@@ -1,0 +1,20 @@
+// GPU octree build: after level uLevel has split, closes level uLevel + 1 (its nodes are the ones just
+// allocated) and writes the indirect dispatch sizes for it (args[uLevel + 1]) and for all nodes (args[21]).
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer Ctrl { uint ctrl[]; };
+layout(std430, binding = 1) writeonly buffer Args { uint args[]; };
+uniform uint uLevel;
+uniform uint uNodeCap;
+void main()
+{
+    uint L = uLevel;
+    uint end = min(ctrl[0], uNodeCap);
+    ctrl[4u + L] = end;
+    uint n = end - ctrl[3u + L];
+    args[(L + 1u) * 3u] = (n + 255u) / 256u;
+    args[(L + 1u) * 3u + 1u] = 1u;
+    args[(L + 1u) * 3u + 2u] = 1u;
+    args[21u * 3u] = (end + 255u) / 256u;
+    args[21u * 3u + 1u] = 1u;
+    args[21u * 3u + 2u] = 1u;
+}
