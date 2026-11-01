@@ -24,7 +24,14 @@ namespace GravitySimulator.Sph
         public string Version { get; }
 
         /// <summary>Creates the context, or returns null with the reason in <paramref name="error"/>.</summary>
-        public static HeadlessGlContext TryCreate(out string error)
+        public static HeadlessGlContext TryCreate(out string error) => TryCreate(new Version(4, 3), out error);
+
+        /// <summary>
+        /// Creates a hidden core context of the given version, or returns null with the reason. Also a
+        /// probe before creating a GLControl: a GLControl's context failure is raised inside its window
+        /// procedure, where WinForms turns it into the unhandled-exception dialog instead of throwing.
+        /// </summary>
+        public static HeadlessGlContext TryCreate(Version version, out string error)
         {
             error = null;
             try
@@ -33,7 +40,7 @@ namespace GravitySimulator.Sph
                 var settings = new NativeWindowSettings
                 {
                     API = ContextAPI.OpenGL,
-                    APIVersion = new Version(4, 3),
+                    APIVersion = version,
                     Profile = ContextProfile.Core,
                     Flags = ContextFlags.ForwardCompatible | ContextFlags.Offscreen,
                     StartVisible = false,
